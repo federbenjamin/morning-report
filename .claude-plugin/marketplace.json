@@ -1,0 +1,15 @@
+{
+  "name": "morning-report",
+  "description": "Accountability to your own goals: a daily status report written each night from your Claude Code sessions",
+  "owner": {
+    "name": "federbenjamin"
+  },
+  "plugins": [
+    {
+      "name": "morning-report",
+      "source": "./",
+      "description": "Accountability to your own goals: a daily status report written each night from your Claude Code sessions",
+      "category": "productivity"
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "name": "morning-report",
+  "version": "0.1.0",
+  "description": "Accountability to your own goals: a daily status report written each night from your Claude Code sessions",
+  "author": {
+    "name": "federbenjamin"
+  },
+  "userConfig": {
+    "dataDir": {
+      "type": "string",
+      "title": "Data folder",
+      "description": "Where the reports, your answers, priorities.md and profile.md live. ~ is your home folder.",
+      "default": "~/.morning-report"
+    },
+    "summaryModel": {
+      "type": "string",
+      "title": "Summary model",
+      "description": "The model that summarizes each session. A cheap one is enough.",
+      "default": "sonnet"
+    },
+    "reportModel": {
+      "type": "string",
+      "title": "Report model",
+      "description": "The model that writes the report from the summaries.",
+      "default": "opus"
+    },
+    "sessionLogsDir": {
+      "type": "string",
+      "title": "Session logs folder",
+      "description": "Optional folder of <session-id>.md logs to read beside the transcripts. Empty skips it.",
+      "default": ""
+    },
+    "notifyCommand": {
+      "type": "string",
+      "title": "Notify command",
+      "description": "Optional command run with one message argument when a report is ready or fails. Empty skips it.",
+      "default": ""
+    },
+    "launchCommand": {
+      "type": "string",
+      "title": "Launch command",
+      "description": "Optional command /morning runs to start a fast-track item in a new session, with {dir}, {name} and {prompt} filled in. Empty prints the prompts to paste.",
+      "default": ""
+    },
+    "gitCommit": {
+      "type": "boolean",
+      "title": "Commit to git",
+      "description": "When dataDir is a folder of a git repo, commit it and push after each run.",
+      "default": false
+    },
+    "setupDays": {
+      "type": "number",
+      "title": "Setup scan days",
+      "description": "How many days of sessions /morning-setup counts when it offers to read them, at most 7.",
+      "default": 7
+    },
+    "reportHour": {
+      "type": "number",
+      "title": "Report hour",
+      "description": "The hour (0–19) /morning-setup schedule runs the report, then hourly for four hours so a sleeping Mac catches up.",
+      "default": 5
+    }
+  },
+  "types": "./types/index.d.ts"
+}
