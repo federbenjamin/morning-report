@@ -39,7 +39,7 @@
     "launchCommand": {
       "type": "string",
       "title": "Launch command",
-      "description": "Optional command /morning runs to start a fast-track item in a new session, with {dir}, {name} and {prompt} filled in. Empty prints the prompts to paste.",
+      "description": "Optional command /morning-review runs to start a fast-track item in a new session, with {dir}, {name} and {prompt} filled in. Empty prints the prompts to paste.",
       "default": ""
     },
     "gitCommit": {

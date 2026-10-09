@@ -8,7 +8,7 @@ Prints JSON: {"sessions": [{"id", "project", "start", "end", "typed", "active_mi
 Keeps what the person typed (including prompts queued mid-turn), the agent's prose, and each
 subagent's task and final report; drops tool calls and results. Headless sessions (`claude -p`,
 the SDK) are dropped whole; in a session where /morning-review, /morning-run or /morning-setup was
-typed, everything from that entry on is dropped. The output stays under OUTPUT_CAP UTF-8 bytes. Read-only.
+run, everything from the engine's record of that command on is dropped. The output stays under OUTPUT_CAP UTF-8 bytes. Read-only.
 """
 import argparse
 import datetime as dt
@@ -25,11 +25,14 @@ NOT_TYPED = (
     "From the session", "From the owning session",
     # Machine-sent prompts: cache keepalive and the /afk relay.
     "keepalive ping", "Last keepalive ping", "automessage:",
-    # The prompt the mod submits for /morning-review.
-    "Run my morning review.",
+    # A prompt this plugin submitted (the review), as the engine records it.
+    "The morning-report plugin sent a message:",
 )
 KEEPALIVE_REPLY = "ok"
-OWN_COMMAND = re.compile(r"^/(morning|morning-review|morning-run|morning-setup)(\s|$)")
+OWN_COMMANDS = ("morning-review", "morning-run", "morning-setup")
+OWN_COMMAND = re.compile(r"^/(%s)(\s|$)" % "|".join(OWN_COMMANDS))
+# The engine records a slash command as a system/local_command entry, not as typed text.
+OWN_COMMAND_RECORD = re.compile(r"<command-name>/(%s)</command-name>" % "|".join(OWN_COMMANDS))
 IDLE_GAP = dt.timedelta(minutes=20)
 TYPING_PAD = dt.timedelta(minutes=5)
 RELAY_PASTE = re.compile(r"^<pasted_content[^>]*>\s*From the [^\n]{0,60}?session")
@@ -103,6 +106,13 @@ def human_queued_prompt(entry):
     if a.get("commandMode") != "prompt" or not isinstance(origin, dict) or origin.get("kind") != "human":
         return None
     return content_text(a.get("prompt"))
+
+
+def own_command(entry, text):
+    """True at the engine's record of one of this plugin's commands, or at one typed as text."""
+    if entry.get("type") == "system" and entry.get("subtype") == "local_command":
+        return bool(OWN_COMMAND_RECORD.search(str(entry.get("content", ""))))
+    return text is not None and bool(OWN_COMMAND.match(text))
 
 
 def typed_text(entry):
@@ -229,7 +239,7 @@ def extract_session(path, since, until, logs_dir):
         if t is None:
             continue
         text = typed_text(e)
-        if text is not None and OWN_COMMAND.match(text):
+        if own_command(e, text):
             until = min(until, t)
             break
         if not (since <= t < until):
