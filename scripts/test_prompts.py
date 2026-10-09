@@ -136,7 +136,7 @@ class ReportPromptTest(unittest.TestCase):
         self.assertNotIn("Outward is the scoreboard", text)
         self.assertNotIn("**Tooling this week:**", text)
         self.assertNotRegex(text, r"\boperator\b")
-        self.assertLessEqual(len(text.split()), 1538)
+        self.assertLessEqual(len(text.split()), 1617)
 
     def test_no_progress_split_when_counts_as_progress_is_none(self):
         text = prompt("report.md")
@@ -157,6 +157,28 @@ class ReportPromptTest(unittest.TestCase):
         self.assertNotIn("days it is due", text)
         self.assertNotIn("same shape every day", text)
 
+    def test_questions_are_open_and_set_no_rules(self):
+        text = prompt("report.md")
+
+        template = text[text.index("## Questions"):text.index("One thing to remember all day:")]
+        self.assertIn("<1-2, open, no options>", template)
+        self.assertNotIn("<option>", template)
+        self.assertNotIn("<exactly 5>", template)
+        rule = line_with(text, "**Questions are how you learn the person")
+        self.assertIn("one or two open questions", rule)
+        self.assertNotRegex(text, r"(?i)2-4 short options")
+        self.assertIn("Never ask them to set a cap, a priority, or a deadline", text)
+        self.assertIn("read them as context for how to coach, never as rules", text)
+        self.assertNotIn("names the mistake and the fix", text)
+        self.assertIn("never a reproach", text)
+
+    def test_watch_for_sections_are_weekly(self):
+        text = prompt("report.md")
+
+        for heading in ("## What you're doing well", "## What's not working", "## Drift"):
+            self.assertRegex(text, re.escape(heading) + r"\n<when the profile asks; Mondays\.")
+        self.assertIn("written on Monday's report only, covering the week, and left out on other days", text)
+
     def test_a_quiet_day_keeps_every_core_section(self):
         rule = line_with(prompt("report.md"), "**Quiet day.**")
 
@@ -164,6 +186,22 @@ class ReportPromptTest(unittest.TestCase):
         for section in ("Fast track", "Questions"):
             self.assertIn(section, rule)
         self.assertNotIn("write only", rule)
+
+
+class ReviewPromptTest(unittest.TestCase):
+    def test_answers_are_taken_in_the_persons_words_and_rules_only_on_request(self):
+        text = prompt("morning-review.md")
+
+        step = text[text.index("3. **Questions.**"):text.index("4. **Fast track.**")]
+        self.assertIn("in one message, numbered", step)
+        self.assertIn("wait for my reply in my own words", step)
+        self.assertNotIn("AskUserQuestion", step)
+        self.assertNotIn("the report's options", step)
+        self.assertIn("only when I ask for one in so many words", step)
+        self.assertIn("Never infer a rule from an answer", step)
+        self.assertIn("never ask me whether something should be one", step)
+        self.assertIn("never edit or delete earlier lines", step)
+        self.assertNotIn("sets or changes a priority", step)
 
 
 class SummarizerPromptTest(unittest.TestCase):

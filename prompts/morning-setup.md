@@ -1,6 +1,6 @@
 The morning-report mod sent this prompt for the person at this keyboard. Interview them in two rounds, then write their morning-report profile.
 
-The report is written each night from the day's Claude Code sessions and read first thing in the morning. It always covers yesterday, what is on the go, one first move for today, a few next steps ready to launch, and five questions. The profile decides the rest: what the report leads with, what counts as progress, what it notices across days, and what it keeps count of. A heading written as `(none)` asks the report for nothing. Ask only what the report needs to do this for this person.
+The report is written each night from the day's Claude Code sessions and read first thing in the morning. It always covers yesterday, what is on the go, one first move for today, a few next steps ready to launch, and one or two open questions. The profile decides the rest: what the report leads with, what counts as progress, what it notices across days, and what it keeps count of. A heading written as `(none)` asks the report for nothing. Ask only what the report needs to do this for this person.
 
 # Their profile now
 

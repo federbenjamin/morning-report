@@ -21,7 +21,7 @@ Then run `/morning-setup` once in any Claude Code session. It is the one setup c
 - **A report every morning.** Where yesterday's time went, each open stream and how long since it moved, and one first move toward your goal.
 - **Goals you set in one interview.** `/morning-setup` asks what you are working toward and, if you agree, reads your recent sessions to see where your time goes.
 - **A fast track.** Short sessions that close open threads, each with a prompt ready to launch.
-- **A review that remembers.** `/morning-review` asks the report's questions and saves your answers, so tomorrow's report knows more.
+- **A review that learns.** `/morning-review` asks the report's one or two open questions and saves your answers in your words, so tomorrow's report knows you better. It writes a rule only when you ask for one.
 - **Runs on a schedule.** On macOS, `/morning-setup schedule` installs a nightly job; `/morning-setup remove` takes it out.
 - **Stays on your machine.** It reads only this machine's sessions, and the reports stay in your data folder.
 
@@ -49,12 +49,12 @@ The report is about two screens, not counting the fast track. Every report has:
 - **Things on the go:** each open stream, where it stands, and how long since it moved; what finished goes under "Wrapped up".
 - **First move today:** one small action toward what counts as progress, with a time budget.
 - **Fast track:** 2–3 short sessions that close open threads. Each lists the calls only you can make, and a prompt ready to launch.
-- **Questions:** five, each with options, so tomorrow's report knows more.
+- **Questions:** one or two, open, answered in your own words, so tomorrow's report knows you better.
 - **One thing to remember all day:** shown in every session's status area for 36 hours.
 
-Your profile adds the rest. When **Watch for** names something, the report adds "What you're doing well" and "What's not working", each with a session and a time for every example, and "Drift" for patterns across days. When **Track** names a limit or a regular output, the report keeps count of it. After two weeks of reports, an "Is this working?" section checks your progress against your goal.
+Your profile adds the rest. When **Watch for** names something, Monday's report adds "What you're doing well" and "What's not working" for the week, each with a session and a time for every example, and "Drift" for patterns across days. When **Track** names a limit or a regular output, the report keeps count of it. After two weeks of reports, an "Is this working?" section checks your progress against your goal.
 
-Run **`/morning-review`** in any session to go through the report: it asks its questions and saves your answers, then asks which fast-track items to start. With `launchCommand` set, it starts each one in a new session; with it empty (the default), it prints each filled prompt for you to paste.
+Run **`/morning-review`** in any session to go through the report: it asks its questions and saves your answers, writes a rule to `priorities.md` only when you ask for one, then asks which fast-track items to start. With `launchCommand` set, it starts each one in a new session; with it empty (the default), it prints each filled prompt for you to paste.
 
 ### Remove
 
@@ -91,7 +91,7 @@ Set them with `/plugin configure morning-report@morning-report`, or under `plugi
 | `profile.md` | `/morning-setup`: an interview that can read your recent sessions, under five fixed headings |
 | `<date>.md` | the nightly run |
 | `<date>-answers.md` | `/morning-review` |
-| `priorities.md` | `/morning-review`, one line per ruling, `(until YYYY-MM-DD)` when it expires |
+| `priorities.md` | `/morning-review`, one line per rule you asked for, `(until YYYY-MM-DD)` when it expires |
 | `remember.txt` | the nightly run |
 | `runs/<date>-summaries.md`, `runs/<date>-run.json` | the nightly run (the summaries the report read; window, counts, seconds, token usage per model) |
 | `state.json` | the nightly run (watermark, the report window's start, report date) |
@@ -106,7 +106,7 @@ Set them with `/plugin configure morning-report@morning-report`, or under `plugi
 5. **Output:** the plugin writes `<date>.md` and `remember.txt`, saves the summaries and the token usage under `runs/`, advances the watermark, and runs `notifyCommand`.
 6. **`/morning-review`** in any session does four things:
    - shows the key parts of today's report;
-   - asks its questions and saves your answers and priority rulings;
+   - asks its questions and saves your answers, and any rule you asked for;
    - asks which fast-track items to launch and the calls each one needs;
    - fills each picked item's prompt with your answers, then starts it in a new session through `launchCommand`, or prints it for you to paste when `launchCommand` is empty.
 
