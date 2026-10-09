@@ -22,6 +22,12 @@ def user(content, ts=IN, **kw):
     return {"type": "user", "timestamp": ts, "cwd": "/work/proj", "message": {"content": content}, **kw}
 
 
+def command(name, ts=IN):
+    """A slash command as the engine records it: a system/local_command entry, not typed text."""
+    return {"type": "system", "subtype": "local_command", "timestamp": ts, "cwd": "/work/proj",
+            "content": f"<command-name>/{name}</command-name><command-message>{name}</command-message><command-args></command-args>"}
+
+
 def agent(content, ts=IN, **kw):
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
@@ -111,10 +117,11 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(ids, ["ok1"])
 
     def test_own_slash_commands_drop_session(self):
-        self.write_session("m1", [user("<command-name>/morning</command-name>"), agent("report")])
-        self.write_session("m2", [user("<command-name>/morning-run</command-name>"), agent("report")])
-        self.write_session("m3", [user("<command-name>/morning-setup</command-name>"), agent("interview")])
-        self.write_session("keep", [user("<command-name>/build</command-name><command-args>x.md</command-args>")])
+        self.write_session("m1", [command("morning-review"), agent("report")])
+        self.write_session("m2", [command("morning-run"), agent("report")])
+        self.write_session("m3", [command("morning-setup"), agent("interview")])
+        self.write_session("m4", [user("<command-name>/morning-run</command-name>"), agent("report")])
+        self.write_session("keep", [command("build"), user("<command-name>/build</command-name><command-args>x.md</command-args>")])
         self.write_session("keep2", [user("morning-setup plans", "2026-10-05T11:00:00Z")])
         sessions = self.run_extract()
         self.assertEqual([s["id"] for s in sessions], ["keep", "keep2"])
@@ -216,8 +223,8 @@ class ExtractTest(unittest.TestCase):
         self.write_session("s", [
             user("before", "2026-10-05T09:00:00Z"),
             agent("agent before", "2026-10-05T09:01:00Z"),
-            user("<command-name>/morning</command-name>", "2026-10-05T10:00:00Z"),
-            user("Run my morning review. The morning-report mod sent this prompt.", "2026-10-05T10:00:01Z"),
+            command("morning-review", "2026-10-05T10:00:00Z"),
+            user("The morning-report plugin sent a message: Run my morning review. The morning-report mod sent this prompt.", "2026-10-05T10:00:01Z"),
             agent("report shown", "2026-10-05T10:01:00Z"),
             user("answer after", "2026-10-05T10:02:00Z"),
         ])
@@ -233,7 +240,7 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(sessions[0]["typed"], 1)
 
     def test_morning_review_prompt_alone_is_not_typed(self):
-        self.write_session("s", [user("real"), user("Run my morning review. The mod sent this.")])
+        self.write_session("s", [user("real"), user("The morning-report plugin sent a message: Run my morning review.")])
         self.assertEqual(self.text_of("s").count("[you]"), 1)
 
     def test_word_morning_without_slash_does_not_drop_session(self):
