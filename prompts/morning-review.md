@@ -9,9 +9,9 @@ Steps:
 
 1. Read today's report. If it's missing, say so in one line, tell me to run `/morning-run`, and stop.
 2. Show me every section of the report as written, nothing added, except "Fast track" and "Questions".
-3. **Questions.** If the report has a "Questions" section, ask its questions with AskUserQuestion (at most 4 per call), using the report's options as given and keeping each question's text as written. Then:
-   - Write my answers to `{{TODAY}}-answers.md`, one line per question: `- <question> → <my answer>`, adding any note I gave. When I typed my own answer instead of picking an option, write my words as typed and name no option.
-   - If an answer sets or changes a priority (something is or isn't a priority, a deadline, a weekly cap on something), append one line per ruling to `priorities.md`: `- {{TODAY}}: <the ruling in plain words> (until YYYY-MM-DD)`. Leave out `(until …)` when the ruling has no end. When a ruling's duration isn't clear, ask me in a follow-up AskUserQuestion with options like "this week", "2 weeks", "until I say otherwise". Never edit or delete earlier lines.
+3. **Questions.** If the report has a "Questions" section, ask its questions in one message, numbered, each with its text as written, and wait for my reply in my own words. Then:
+   - Write my answers to `{{TODAY}}-answers.md`, one line per question: `- <question> → <my answer>`, my words as typed.
+   - A rule goes in `priorities.md` only when I ask for one in so many words ("make that a rule", "from now on", "until <date>"): append one line per rule, `- {{TODAY}}: <the rule in my words> (until YYYY-MM-DD)`, with `(until …)` only when I named an end. Never infer a rule from an answer, never ask me whether something should be one, and never edit or delete earlier lines.
 4. **Fast track.** If the report has no "Fast track" section, stop. Otherwise:
    - The report was written hours ago, so check each item is still open: look up the state of the PR, branch or release it names (`gh pr view`, `git log`). Leave out an item whose work is already done and tell me in one line. If none is left, stop.
    - Ask me which items to launch now, with one multi-select AskUserQuestion listing each item's title and time budget.
