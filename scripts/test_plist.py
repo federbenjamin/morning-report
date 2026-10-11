@@ -8,13 +8,12 @@ import sys
 import tempfile
 import unittest
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Calls hooks/pipeline.ts itself, so the test runs the plist and the check the schedule hook uses.
+from pipeline_ts import call
+
 PLUGIN = "morning-report"
 UID = "501"
 TARGET = f"gui/{UID}/com.morning-report"
-
-# Calls hooks/pipeline.ts itself, so the test runs the plist and the check the schedule hook uses.
-CALL = "import(process.argv[1]).then(m => process.stdout.write(JSON.stringify(m[process.argv[2]](JSON.parse(process.argv[3])))))"
 
 CLAUDE_STUB = """#!/bin/sh
 here=$(dirname "$0")
@@ -74,14 +73,7 @@ class Job:
             raise AssertionError("the launchctl stub does not shadow the real one")
         self.input = {"claudePath": str(self.bin / "claude"), "home": str(self.home), "path": path, "uid": UID, "hour": 5, "pluginName": PLUGIN}
         self.plist = self.home / "Library" / "LaunchAgents" / "com.morning-report.plist"
-        self.plist.write_text(self.call("renderPlist", self.input))
-
-    def call(self, name, arg):
-        r = subprocess.run(
-            ["node", "-e", CALL, (ROOT / "hooks" / "pipeline.ts").as_uri(), name, json.dumps(arg)],
-            capture_output=True, text=True, check=True,
-        )
-        return json.loads(r.stdout)
+        self.plist.write_text(call("renderPlist", self.input))
 
     def lists(self, out, code=0, config_dir_out=None):
         (self.bin / "list.out").write_text(out)
@@ -227,7 +219,7 @@ class JobPluginCheckTest(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         self.job = Job(tmp)
-        self.check = self.job.call("jobPluginCheck", self.job.input)
+        self.check = call("jobPluginCheck", self.job.input)
         self.config_dir = tmp / "config"
         self.config_dir.mkdir()
 

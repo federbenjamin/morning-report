@@ -31,7 +31,7 @@ Then run `/morning-setup` once in any Claude Code session. It is the one setup c
 
 `/morning-setup` builds your `profile.md`, the file that tells each report what you are working toward.
 
-1. **The cost.** `/morning-setup` counts your sessions from the last `setupDays` days (7 at most) and starts an interview in the same session. It shows what reading them would cost: the number of sessions, the summary calls on `summaryModel`, and one `reportModel` call. It asks whether to read them, and for how many days, or to skip. Nothing is read yet. When the sessions cannot be counted (no `python3`, or the extract fails), the command says why and the interview starts without the scan.
+1. **The cost.** `/morning-setup` counts your sessions from the last `setupDays` days (7 at most) and starts an interview in the same session. It shows what reading them would cost: the number of sessions, the summary calls on `summaryModel`, and one `reportModel` call. It asks whether to read them, and for how many days, or to skip. Counting reads the transcripts on this machine; nothing goes to a model yet. When the sessions cannot be counted (no `python3`, or the extract fails), the command says why and the interview starts without the scan.
 2. **Round one:** what you are working on, and what you want a morning report to do for you.
 3. **The scan**, only if you agreed. It reads those sessions' transcripts, summarizes them, and writes `runs/setup-scan.md`: where your time went by project, and the streams and habits it saw. It takes a few minutes.
 4. **Round two:** your week as the scan saw it: which work matters most, which is background, and what the report should notice or count from day to day. When you skipped the scan, or there was nothing to read, there is no round two.
@@ -39,7 +39,7 @@ Then run `/morning-setup` once in any Claude Code session. It is the one setup c
 
 Run `/morning-setup` again whenever your goal changes. It shows your current profile first, and you can skip the scan.
 
-**`/morning-setup schedule`** (macOS) installs a launchd job, `com.morning-report`. It runs `claude -p /morning-run` at `reportHour`, then hourly for four more hours so a Mac that was asleep catches up; once the day's report exists, the later runs skip. The job's log is `~/Library/Logs/com.morning-report/run.log`. The job clears every environment variable but `HOME`, `PATH` and the login ones (`USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `SSH_AUTH_SOCK`), including any set with `launchctl setenv`, and runs from your home folder, so `schedule` first checks that `claude plugin list` lists the plugin enabled there; a plugin installed for one project, or under `CLAUDE_CONFIG_DIR`, is refused. After you uninstall the plugin, the job removes itself the next time it fires, and writes why to its log first. While the plugin is disabled, the job runs nothing. When `claude plugin list` fails, the job stays installed and writes the failure to its log. On other systems, run `claude -p /morning-run` each morning by hand, or put it in your own scheduler.
+**`/morning-setup schedule`** (macOS) installs a launchd job, `com.morning-report`. It runs `claude -p /morning-run` at `reportHour`, then hourly for four more hours, so a run that failed is tried again; once the day's report exists, the later runs skip. The job's log is `~/Library/Logs/com.morning-report/run.log`. The job clears every environment variable but `HOME`, `PATH` and the login ones (`USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `SSH_AUTH_SOCK`), including any set with `launchctl setenv`, and runs from your home folder, so `schedule` first checks that `claude plugin list` lists the plugin enabled there; a plugin installed for one project, or under `CLAUDE_CONFIG_DIR`, is refused. After you uninstall the plugin, the job removes itself the next time it fires, and writes why to its log first. While the plugin is disabled, the job runs nothing. When `claude plugin list` fails, the job stays installed and writes the failure to its log. On other systems, run `claude -p /morning-run` each morning by hand, or put it in your own scheduler.
 
 ### Each morning
 
@@ -50,7 +50,7 @@ The report is about two screens, not counting the fast track. Every report has:
 - **First move today:** one small action toward what counts as progress, with a time budget.
 - **Fast track:** 2–3 short sessions that close open threads. Each lists the calls only you can make, and a prompt ready to launch.
 - **Questions:** one or two, open, answered in your own words, so tomorrow's report knows you better.
-- **One thing to remember all day:** shown in every session's status area for 36 hours.
+- **One thing to remember all day:** shown above the prompt in every session until the next report replaces it, or it goes stale.
 
 Your profile adds the rest. When **Watch for** names something, Monday's report adds "What you're doing well" and "What's not working" for the week, each with a session and a time for every example, and "Drift" for patterns across days. When **Track** names a limit or a regular output, the report keeps count of it. After two weeks of reports, an "Is this working?" section checks your progress against your goal.
 
@@ -79,48 +79,48 @@ Set them with `/plugin configure morning-report@morning-report`, or under `plugi
 | `reportModel` | `opus` |
 | `sessionLogsDir` | empty (skip): an optional folder of `<session-id>.md` logs to read beside the transcripts |
 | `notifyCommand` | empty (skip): a command run with one message argument when a report is ready or fails |
-| `gitCommit` | `false`. When on and `dataDir` is a folder of a git repo, each run commits that folder and pushes. A failed push is reported, never fatal. Ignore `state.json` and `remember.txt` in that repo. |
+| `gitCommit` | `false`. When on and `dataDir` is a folder of a git repo, each run commits that folder and pushes. A failed push is reported, never fatal. Ignore `state.json` in that repo. |
 | `launchCommand` | empty: `/morning-review` prints the filled prompts to paste. Otherwise a command with `{dir}`, `{name}` and `{prompt}` slots, e.g. one that opens a terminal tab running `claude` |
 | `setupDays` | `7` (at most 7): how many days of sessions `/morning-setup` offers to read |
-| `reportHour` | `5` (0–19): the hour `/morning-setup schedule` runs the report, then hourly for four hours. Run `/morning-setup schedule` again after you change it. |
+| `reportHour` | `5` (0–19): the hour `/morning-setup schedule` runs the report, then hourly for four hours to retry a failed run. Run `/morning-setup schedule` again after you change it. |
 
 ### Files in `dataDir`
 
 | File | Written by |
 | --- | --- |
 | `profile.md` | `/morning-setup`: an interview that can read your recent sessions, under five fixed headings |
+| `profile-<date>-old.md` | `/morning-setup`, a copy of the profile it replaced that day |
 | `<date>.md` | the nightly run |
 | `<date>-answers.md` | `/morning-review` |
 | `priorities.md` | `/morning-review`, one line per rule you asked for, `(until YYYY-MM-DD)` when it expires |
-| `remember.txt` | the nightly run |
-| `runs/<date>-summaries.md`, `runs/<date>-run.json` | the nightly run (the summaries the report read; window, counts, seconds, token usage per model) |
+| `runs/<date>-summaries.md`, `runs/<date>-run.json` | the nightly run, once the report is written (the summaries the report read; window, counts, active time overall and by project, seconds, token usage per model) |
 | `state.json` | the nightly run (watermark, the report window's start, report date) |
 | `runs/setup-scan.md` | `/morning-setup`, when you let it read your sessions (time by project, the streams and habits it saw; the interview reads it) |
 
 ## How it works
 
-1. **At `reportHour`:** launchd (macOS) runs `claude -p /morning-run`, and again on the hour for four hours. Once today's report exists, the later runs skip.
-2. **Extract:** `scripts/extract.py` pulls the window's sessions as prose: what you typed, the agent's text, and each subagent's task and final report. It keeps prompts you typed while a turn ran. It drops tool output, headless sessions, and everything from a typed `/morning-review` or `/morning-setup` on.
+1. **At `reportHour`:** launchd (macOS) runs `claude -p /morning-run`, and again on the hour for four hours to retry a failed run. Once today's report exists, the later runs skip.
+2. **Extract:** `scripts/extract.py` pulls the window's sessions as prose: what you typed, the agent's text, and each subagent's task and final report. It keeps prompts you typed while a turn ran. It drops tool output, headless sessions, and, in a session where you ran `/morning-review`, `/morning-setup` or `/morning-run`, everything from that command on.
 3. **Summarize:** one call to `summaryModel` per batch of sessions, a long session alone and short ones together (`prompts/summarizer.md` with your `profile.md` inserted).
-4. **Report:** one call to `reportModel` (`prompts/report.md` with your `profile.md` inserted). It reads the summaries, the last 14 reports with your answers, and the unexpired lines of `priorities.md`.
-5. **Output:** the plugin writes `<date>.md` and `remember.txt`, saves the summaries and the token usage under `runs/`, advances the watermark, and runs `notifyCommand`.
+4. **Report:** one call to `reportModel` (`prompts/report.md` with your `profile.md` inserted). It reads the summaries, your recent reports with your answers (the latest whole, older ones without their fast track), and the unexpired lines of `priorities.md`. On Mondays the plugin adds `prompts/report-weekly.md`, and once two weeks of reports exist without a recent check, `prompts/report-day14.md`.
+5. **Output:** once the report came back whole, the plugin saves the summaries and the run record under `runs/`, writes `<date>.md`, advances the watermark, and runs `notifyCommand`.
 6. **`/morning-review`** in any session does four things:
    - shows the key parts of today's report;
    - asks its questions and saves your answers, and any rule you asked for;
    - asks which fast-track items to launch and the calls each one needs;
    - fills each picked item's prompt with your answers, then starts it in a new session through `launchCommand`, or prints it for you to paste when `launchCommand` is empty.
 
-The window runs from the last successful run to now, capped at 72h.
+The window runs from the last successful run to now, capped at `MAX_WINDOW_MS` (`hooks/pipeline.ts`).
 
 Failures:
-- **Transient** (a rate limit, overload, a server error, a dropped connection): the call retries after 30, 60, 120 and 240 s. The waits run as a `sleep` child process, because a `$.clock.sleep` would count against the hook's 10 s budget.
+- **Transient** (a rate limit, overload, a server error, a dropped connection): the call retries after the waits in `RETRY_DELAYS_S` (`hooks/pipeline.ts`). The waits run as a `sleep` child process, because a `$.clock.sleep` would count against the hook's 10 s budget.
 - **Permanent** (auth, billing, a bad model id): the run stops.
 - **Still failing:** a session whose summary fails after its retries is listed as not summarized. The run fails only when more than half fail.
 - **Failed run:** keeps the watermark, so the next run covers the gap.
 
 To fill in past days, `/morning-run --backfill YYYY-MM-DD --until <ISO time>` writes that date's report over the 24h before `--until`. It leaves the watermark, the remember line and notifications alone. Backfill oldest first, so each report reads the ones before it.
 
-Your active time is computed from your message times, with overlapping sessions counted once, and given to the report as a fact. A second run on the same day is skipped unless you pass `/morning-run --force`, which redoes the report over the first run's window.
+Your active time is computed from your message times, with overlapping sessions counted once, and given to the report as a fact, with this week's total from the run records. A second run on the same day is skipped unless you pass `/morning-run --force`, which redoes the report over the first run's window.
 
 ### Cost
 

@@ -57,7 +57,7 @@
     "reportHour": {
       "type": "number",
       "title": "Report hour",
-      "description": "The hour (0–19) /morning-setup schedule runs the report, then hourly for four hours so a sleeping Mac catches up.",
+      "description": "The hour (0–19) /morning-setup schedule runs the report, then hourly for four hours to retry a failed run.",
       "default": 5
     }
   },

@@ -10,8 +10,9 @@ export type Session = {
 
 export type Summary = { ids: string[]; text: string } | { ids: string[]; failed: string }
 
+export const DAY_MS = 24 * 3600_000
 export const MAX_WINDOW_MS = 72 * 3600_000
-export const FIRST_WINDOW_MS = 24 * 3600_000
+export const FIRST_WINDOW_MS = DAY_MS
 export const REPORTS_READ = 14
 export const REMEMBER_FRESH_MS = 36 * 3600_000
 export const BATCH_SMALL_CHARS = 3_000
@@ -292,6 +293,22 @@ export function profileHeadingsBlock(): string {
   return PROFILE_HEADINGS.map(h => `## ${h.heading} — ${h.holds}`).join('\n')
 }
 
+export const SCAN_TOOL = 'morning_setup_scan'
+
+// The `{{KEY}}` slots each prompt file holds, which its hook fills; a test binds this to the files.
+export const PROMPT_FILLS = {
+  'report.md': ['PROFILE'],
+  'report-weekly.md': [],
+  'report-day14.md': ['ANSWERED'],
+  'summarizer.md': ['PROFILE'],
+  'setup-scan.md': [],
+  'morning-setup.md': ['DATA_DIR', 'TODAY', 'PREVIEW', 'PROFILE_HEADINGS', 'PROFILE'],
+  'morning-review.md': ['DATA_DIR', 'TODAY', 'LAUNCH'],
+} as const
+
+export type PromptName = keyof typeof PROMPT_FILLS
+export type PromptValues<N extends PromptName> = Record<(typeof PROMPT_FILLS)[N][number], string>
+
 const PLACEHOLDER = /\{\{([^{}]+)\}\}/g
 
 // One pass, so a value that itself holds `{{KEY}}` is never filled again.
@@ -480,6 +497,22 @@ export function hours(minutes: number): string {
 
 export const COMPUTED_FACTS = '# Computed facts (from timestamps; use these, never sum session minutes yourself)'
 
+function projectLines(projects: readonly ProjectMinutes[]): string[] {
+  return projects.map(p => `  - ${p.project}: ${hours(p.active_minutes)}`)
+}
+
+export function factsBlock(extracted: Extracted, failed: number, extra: readonly string[] = []): string {
+  return [
+    COMPUTED_FACTS,
+    `- sessions: ${extracted.sessions.length}`,
+    `- active time across all sessions, overlaps counted once: ${hours(extracted.active_minutes)}`,
+    '- time by project, overlaps within a project counted once:',
+    ...projectLines(extracted.projects),
+    `- sessions not summarized: ${failed}`,
+    ...extra,
+  ].join('\n')
+}
+
 export type ScanInput = {
   since: string
   until: string
@@ -492,15 +525,145 @@ export type ScanInput = {
 export function scanPrompt({ since, until, days, extracted, failed, summaries }: ScanInput): string {
   return [
     `Window: ${since} → ${until} (${plural(days, 'day')}).`,
-    [
-      COMPUTED_FACTS,
-      `- sessions: ${extracted.sessions.length}`,
-      `- active time across all sessions, overlaps counted once: ${hours(extracted.active_minutes)}`,
-      '- time by project, overlaps within a project counted once:',
-      ...extracted.projects.map(p => `  - ${p.project}: ${hours(p.active_minutes)}`),
-      `- sessions not summarized: ${failed}`,
-    ].join('\n'),
+    factsBlock(extracted, failed),
     `# Session summaries\n${summaries.join('\n\n')}`,
+  ].join('\n\n')
+}
+
+const RUN_RECORD = /^(\d{4}-\d{2}-\d{2})-run\.json$/
+
+function addDays(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10)
+}
+
+export function weekdayOf(date: string): string {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+}
+
+// A report covers the day before its date, so the week a report counts runs from the Monday on or
+// before that day: report dates Tuesday through the next Monday.
+export function weekRunDays(names: readonly string[], today: string): string[] {
+  const covered = addDays(today, -1)
+  const monday = addDays(covered, -((new Date(`${covered}T00:00:00Z`).getUTCDay() + 6) % 7))
+  const first = addDays(monday, 1)
+  return names
+    .map(n => RUN_RECORD.exec(n)?.[1])
+    .filter((d): d is string => d !== undefined && d >= first && d < today)
+    .sort()
+}
+
+function isProjectMinutes(p: unknown): p is ProjectMinutes {
+  if (typeof p !== 'object' || p === null) return false
+  const o = p as JsonObject
+  return typeof o.project === 'string' && typeof o.active_minutes === 'number'
+}
+
+export type RunRecord = { activeMinutes: number; projects: ProjectMinutes[] }
+
+// An unreadable record counts as nothing rather than failing the report it only adds a line to.
+export function parseRunRecord(raw: string): RunRecord | undefined {
+  try {
+    const v = objectAt(JSON.parse(raw), 'run record')
+    if (typeof v.activeMinutes !== 'number') return undefined
+    const projects = Array.isArray(v.projects) ? v.projects.filter(isProjectMinutes) : []
+    return { activeMinutes: v.activeMinutes, projects }
+  } catch {
+    return undefined
+  }
+}
+
+export type WeekToDate = { minutes: number; projects: ProjectMinutes[] }
+
+export function weekToDate(earlier: readonly RunRecord[], tonight: Extracted): WeekToDate {
+  const runs = [...earlier, { activeMinutes: tonight.active_minutes, projects: tonight.projects }]
+  const byProject = new Map<string, number>()
+  for (const run of runs) {
+    for (const p of run.projects) byProject.set(p.project, (byProject.get(p.project) ?? 0) + p.active_minutes)
+  }
+  return {
+    minutes: runs.reduce((n, r) => n + r.activeMinutes, 0),
+    projects: [...byProject]
+      .map(([project, active_minutes]) => ({ project, active_minutes }))
+      .sort((a, b) => b.active_minutes - a.active_minutes || a.project.localeCompare(b.project)),
+  }
+}
+
+function weekLines(week: WeekToDate): string[] {
+  return [
+    `- active time this week, from Monday to the end of this window: ${hours(week.minutes)}`,
+    '- time by project this week:',
+    ...projectLines(week.projects),
+  ]
+}
+
+export type HistoryDay = { day: string; report: string; answers: string | undefined }
+
+const FENCE = /^\s*(```|~~~)/
+const H2 = /^## /
+
+// The section from `## <heading>` up to the next level-two heading outside a code block, dropped.
+function withoutSection(markdown: string, heading: string): string {
+  const out: string[] = []
+  let dropping = false
+  let fenced = false
+  for (const line of markdown.split('\n')) {
+    if (!fenced && H2.test(line)) dropping = line.trim() === `## ${heading}`
+    if (FENCE.test(line)) fenced = !fenced
+    if (!dropping) out.push(line)
+  }
+  return out.join('\n')
+}
+
+// Earlier fast tracks were for their own morning; only the latest one is still on the table.
+export function historyBlock(days: readonly HistoryDay[]): string {
+  return days
+    .map((d, i) => {
+      const report = i === days.length - 1 ? d.report : withoutSection(d.report, 'Fast track')
+      return `## Report ${d.day}\n${report.trim()}\n\n## Answers ${d.day}\n${d.answers ?? '(not answered)'}`
+    })
+    .join('\n\n---\n\n')
+}
+
+export const IS_THIS_WORKING = '## Is this working?'
+const DAY14_AFTER = 13
+const DAY14_EVERY = 7
+
+export type ReportBlocks = { weekly: boolean; day14: boolean }
+
+// Which conditional parts of the report prompt apply today: the week in review on Mondays, and the
+// "Is this working?" check-in once enough reports exist and none of the recent ones holds it.
+export function reportBlocks(today: string, history: readonly HistoryDay[]): ReportBlocks {
+  const recent = history.slice(-DAY14_EVERY)
+  return {
+    weekly: weekdayOf(today) === 'Monday',
+    day14: history.length >= DAY14_AFTER && !recent.some(d => d.report.split('\n').some(l => l.trim() === IS_THIS_WORKING)),
+  }
+}
+
+export function answeredCount(history: readonly HistoryDay[]): number {
+  return history.filter(d => d.answers !== undefined).length
+}
+
+export type ReportInput = {
+  today: string
+  since: string
+  until: string
+  extracted: Extracted
+  failed: number
+  week: WeekToDate
+  priorities: string
+  history: readonly HistoryDay[]
+  summaries: readonly string[]
+}
+
+export function reportPrompt({ today, since, until, extracted, failed, week, priorities, history, summaries }: ReportInput): string {
+  return [
+    `Today is ${today} (${weekdayOf(today)}).`,
+    `Window: ${since} → ${until}. ${plural(history.length, 'earlier report')} on file.`,
+    factsBlock(extracted, failed, weekLines(week)),
+    `# Standing priorities\n${priorities || '(none set)'}`,
+    `# Earlier reports and answers, oldest first (only the latest keeps its Fast track)\n${historyBlock(history) || '(none yet: this is the first report)'}`,
+    `# Session summaries for the window\n${summaries.join('\n\n') || '(no sessions in the window)'}`,
   ].join('\n\n')
 }
 

@@ -352,17 +352,16 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(result["sessions"][0]["active_minutes"], 5)
         self.assertEqual(result["active_minutes"], 5)
 
-    def test_internal_spans_key_is_absent_from_the_result(self):
+    def test_the_result_holds_only_the_documented_keys(self):
         self.write_session("a", [user("one")])
         self.write_session("b", [user("two")])
         result = extract.extract(self.projects, SINCE, UNTIL)
-        self.assertNotIn("_spans", result)
+        self.assertEqual(set(result), {"sessions", "active_minutes", "projects"})
         for s in result["sessions"]:
-            self.assertNotIn("_spans", s)
+            self.assertEqual(set(s), {"id", "project", "start", "end", "typed", "active_minutes", "text"})
         self.assertTrue(result["projects"])
         for p in result["projects"]:
-            self.assertNotIn("_spans", p)
-        self.assertNotIn("_spans", extract.render(result))
+            self.assertEqual(set(p), {"project", "active_minutes"})
 
     def test_morning_setup_stops_the_session_without_matching_longer_commands(self):
         self.write_session("setup", [
