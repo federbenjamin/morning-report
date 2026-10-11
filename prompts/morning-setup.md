@@ -10,7 +10,7 @@ The report is written each night from the day's Claude Code sessions and read fi
 
 - When the profile above is not `(none yet)`, show it to them first. Each round then confirms or changes what it already says, heading by heading; never start blank.
 - A heading they leave blank, or have nothing for, is written as `(none)`.
-- Before writing, when `{{DATA_DIR}}/profile.md` exists, copy it to `{{DATA_DIR}}/profile-<today, YYYY-MM-DD>-old.md`.
+- Before writing, when `{{DATA_DIR}}/profile.md` exists, copy it to `{{DATA_DIR}}/profile-{{TODAY}}-old.md`.
 - Write each heading line as `## ` and the heading alone; the words after the dash below say what goes under it. Under each, write a sentence or a short list in their words.
 
 First: may the mod read their sessions?
@@ -20,8 +20,8 @@ When that reads `(no sessions…`, there is nothing to read: say so in one
 line and go to round one.
 Otherwise show them that line. Ask with AskUserQuestion whether to read
 their sessions, and for how many days, from 1 to 7, or to skip it. Fewer
-days cost fewer calls. Nothing is read yet: the reading happens after round
-one.
+days cost fewer calls. Nothing goes to a model yet: the summarizing happens
+after round one.
 
 Round one: what they are doing and what they want the report for.
 Find out what they are working on or toward right now, in their own words.

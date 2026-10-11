@@ -2,13 +2,13 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, ProcessRunResult, Register } from 'claude-code'
 import {
   activePriorities,
+  answeredCount,
   batchSessions,
-  COMPUTED_FACTS,
   consentLine,
+  DAY_MS,
   describeFailure,
   expandHome,
   fillTemplate,
-  hours,
   intOption,
   isMacOS,
   jobPluginCheck,
@@ -22,6 +22,7 @@ import {
   parseExtracted,
   parseSetupArgs,
   parseRunArgs,
+  parseRunRecord,
   parseState,
   pool,
   profileHeadingsBlock,
@@ -30,8 +31,11 @@ import {
   renderPlist,
   REPORT_FIRES,
   REPORT_HOUR,
+  reportBlocks,
   reportDays,
+  reportPrompt,
   scanFileText,
+  SCAN_TOOL,
   SCAN_UNREADABLE,
   scanPrompt,
   sessionBlock,
@@ -45,8 +49,13 @@ import {
   addUsage,
   isPermanent,
   retryDelayS,
+  weekRunDays,
+  weekToDate,
   windowForRun,
   type Extracted,
+  type HistoryDay,
+  type PromptName,
+  type PromptValues,
   type UsageByModel,
   type RunArgs,
   type Session,
@@ -65,8 +74,6 @@ const EXTRACT_TIMEOUT_MS = 300_000
 const SHORT_PROCESS_TIMEOUT_MS = 60_000
 // What `launchctl print` exits with when the domain holds no such service.
 const LAUNCHCTL_NO_SERVICE = 113
-const DAY_MS = 24 * 3600_000
-const SCAN_TOOL = 'morning_setup_scan'
 
 let scanRunning = false
 
@@ -89,18 +96,17 @@ async function readLine($: EngineInterface, argv: string[]): Promise<string> {
   return r.exitCode === 0 ? r.stdout.trim() : ''
 }
 
+// The engine fills each option's default from plugin.json and checks its type before the module loads.
 async function resolveConfig($: EngineInterface, options: PluginOptions): Promise<Config> {
   const home = (await $.env.get('HOME')) ?? ''
-  const str = (key: string, fallback: string) =>
-    typeof options[key] === 'string' ? (options[key] as string) : fallback
   return {
-    dataDir: expandHome(str('dataDir', '~/.morning-report'), home).replace(/\/$/, ''),
-    summaryModel: str('summaryModel', 'sonnet'),
-    reportModel: str('reportModel', 'opus'),
-    sessionLogsDir: expandHome(str('sessionLogsDir', ''), home),
-    notifyCommand: str('notifyCommand', ''),
-    launchCommand: str('launchCommand', ''),
-    gitCommit: options.gitCommit === true,
+    dataDir: expandHome(options.dataDir as string, home).replace(/\/$/, ''),
+    summaryModel: options.summaryModel as string,
+    reportModel: options.reportModel as string,
+    sessionLogsDir: expandHome(options.sessionLogsDir as string, home),
+    notifyCommand: options.notifyCommand as string,
+    launchCommand: options.launchCommand as string,
+    gitCommit: options.gitCommit as boolean,
     setupDays: intOption(options.setupDays, SETUP_DAYS),
     home,
     reportHour: intOption(options.reportHour, REPORT_HOUR),
@@ -111,8 +117,8 @@ async function readOr($: EngineInterface, path: string, fallback: string): Promi
   return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : fallback
 }
 
-async function readPrompt($: EngineInterface, name: string): Promise<string> {
-  return String(await $.fs.read(`${$.plugin.root}/prompts/${name}`))
+async function readPrompt<N extends PromptName>($: EngineInterface, name: N, values: PromptValues<N>): Promise<string> {
+  return fillTemplate(String(await $.fs.read(`${$.plugin.root}/prompts/${name}`)), values)
 }
 
 async function readProfile($: EngineInterface, cfg: Config): Promise<string | undefined> {
@@ -259,48 +265,60 @@ async function runMorning($: EngineInterface, cfg: Config, args: RunArgs): Promi
     const { sessions } = extracted
 
     const usage: UsageByModel = {}
-    const summarizer = fillTemplate(await readPrompt($, 'summarizer.md'), { PROFILE: profile })
+    const summarizer = await readPrompt($, 'summarizer.md', { PROFILE: profile })
     const { failed, text: summaryText } = await summarizeSessions($, cfg, summarizer, sessions, usage)
 
-    const names = (await $.fs.list(cfg.dataDir)).map(e => e.name)
-    const history: string[] = []
-    for (const day of reportDays(names, today)) {
-      const answers = await readOr($, `${cfg.dataDir}/${day}-answers.md`, '(not answered)')
-      history.push(`## Report ${day}\n${await $.fs.read(`${cfg.dataDir}/${day}.md`)}\n\n## Answers ${day}\n${answers}`)
-    }
-    const priorities = activePriorities(await readOr($, `${cfg.dataDir}/priorities.md`, ''), today)
+    const runsDir = `${cfg.dataDir}/runs`
+    const [history, week, priorities] = await Promise.all([
+      readHistory($, cfg, today),
+      readWeek($, runsDir, today, extracted),
+      readOr($, `${cfg.dataDir}/priorities.md`, ''),
+    ])
+    const blocks = reportBlocks(today, history)
+    const system = [
+      await readPrompt($, 'report.md', { PROFILE: profile }),
+      ...(blocks.weekly ? [await readPrompt($, 'report-weekly.md', {})] : []),
+      ...(blocks.day14 ? [await readPrompt($, 'report-day14.md', { ANSWERED: `${answeredCount(history)} of ${history.length}` })] : []),
+    ].join('\n\n')
 
     const report = await complete($, {
       model: cfg.reportModel,
-      system: fillTemplate(await readPrompt($, 'report.md'), { PROFILE: profile }),
-      prompt: [
-        `Today is ${today} (${new Date(now).toLocaleDateString('en-US', { weekday: 'long' })}).`,
-        `Window: ${since} → ${until}. ${history.length} earlier reports on file.`,
-        `${COMPUTED_FACTS}\n- sessions: ${sessions.length}\n- your active time across all sessions, overlaps counted once: ${hours(extracted.active_minutes)}\n- sessions not summarized: ${failed}`,
-        `# Standing priorities\n${priorities || '(none set)'}`,
-        `# Earlier reports and answers, oldest first\n${history.join('\n\n---\n\n') || '(none yet: this is the first report)'}`,
-        `# Session summaries for the window\n${summaryText.join('\n\n') || '(no sessions in the window)'}`,
-      ].join('\n\n'),
+      system,
+      prompt: reportPrompt({
+        today,
+        since,
+        until,
+        extracted,
+        failed,
+        week,
+        priorities: activePriorities(priorities, today),
+        history,
+        summaries: summaryText,
+      }),
       maxTokens: REPORT_MAX_TOKENS,
       timeoutMs: REPORT_TIMEOUT_MS,
     }, usage)
 
-    const runsDir = `${cfg.dataDir}/runs`
-    await $.process.run(['mkdir', '-p', runsDir])
-    await $.fs.write(`${runsDir}/${today}-summaries.md`, summaryText.join('\n\n') + '\n')
-    await $.fs.write(
-      `${runsDir}/${today}-run.json`,
-      JSON.stringify({ since, until, sessions: sessions.length, activeMinutes: extracted.active_minutes, failed, seconds: Math.round((Date.now() - startedAt) / 1000), usage }, null, 2) + '\n',
-    )
-
     // The remember line is the report's last line: without it the report was cut off, and a
-    // partial report must not replace a whole one or advance the watermark.
+    // partial report must not replace a whole one, advance the watermark, or leave a run record.
     const remember = rememberLine(report)
     if (!remember) throw new Error('the report came back without its last line (cut off at the token cap?); nothing written')
+    await $.process.run(['mkdir', '-p', runsDir])
+    await $.fs.write(`${runsDir}/${today}-summaries.md`, summaryText.join('\n\n') + '\n')
+    const record = {
+      since,
+      until,
+      sessions: sessions.length,
+      activeMinutes: extracted.active_minutes,
+      projects: extracted.projects,
+      failed,
+      seconds: Math.round((Date.now() - startedAt) / 1000),
+      usage,
+    }
+    await $.fs.write(`${runsDir}/${today}-run.json`, JSON.stringify(record, null, 2) + '\n')
     await $.fs.write(reportPath, report.trim() + '\n')
     const saved = cfg.gitCommit ? `; ${await commitData($, cfg, `morning: ${today}${backfill ? ' (backfill)' : ''}`)}` : ''
     if (backfill) return { text: `backfilled ${reportPath}${notSummarized(failed)}${saved}` }
-    await $.fs.write(`${cfg.dataDir}/remember.txt`, remember + '\n')
     await $.fs.write(statePath, JSON.stringify(nextState(since, until, today)) + '\n')
     await notify($, cfg, `Morning report ready (${sessions.length} sessions) — run /morning-review`)
     return { text: `wrote ${reportPath}${notSummarized(failed)}${saved}${note}`, status: { line: remember } }
@@ -311,12 +329,35 @@ async function runMorning($: EngineInterface, cfg: Config, args: RunArgs): Promi
   }
 }
 
+async function readHistory($: EngineInterface, cfg: Config, today: string): Promise<HistoryDay[]> {
+  const days = reportDays((await $.fs.list(cfg.dataDir)).map(e => e.name), today)
+  return Promise.all(
+    days.map(async day => {
+      const answersPath = `${cfg.dataDir}/${day}-answers.md`
+      const [report, answers] = await Promise.all([
+        $.fs.read(`${cfg.dataDir}/${day}.md`),
+        $.fs.exists(answersPath).then(has => (has ? $.fs.read(answersPath) : undefined)),
+      ])
+      return { day, report: String(report), answers: answers === undefined ? undefined : String(answers) }
+    }),
+  )
+}
+
+async function readWeek($: EngineInterface, runsDir: string, today: string, extracted: Extracted) {
+  const names = (await $.fs.exists(runsDir)) ? (await $.fs.list(runsDir)).map(e => e.name) : []
+  const raws = await Promise.all(weekRunDays(names, today).map(day => $.fs.read(`${runsDir}/${day}-run.json`)))
+  return weekToDate(raws.flatMap(raw => parseRunRecord(String(raw)) ?? []), extracted)
+}
+
+// The remember line of the latest nightly report, which state.json names; a backfill never moves it.
 async function freshRemember($: EngineInterface, cfg: Config): Promise<string | undefined> {
-  const path = `${cfg.dataDir}/remember.txt`
+  const { reportDate } = parseState(await readOr($, `${cfg.dataDir}/state.json`, '{}')).state
+  if (reportDate === undefined) return undefined
+  const path = `${cfg.dataDir}/${reportDate}.md`
   if (!(await $.fs.exists(path))) return undefined
   const { mtimeMs } = await $.fs.stat(path)
   if (Date.now() - mtimeMs > REMEMBER_FRESH_MS) return undefined
-  return String(await $.fs.read(path)).trim() || undefined
+  return rememberLine(String(await $.fs.read(path)))
 }
 
 type SetupWindow = { since: string; until: string; extracted: Extracted; consent: string }
@@ -345,8 +386,10 @@ async function setupPreview($: EngineInterface, cfg: Config): Promise<{ preview:
 
 async function startSetup($: EngineInterface, cfg: Config): Promise<{ text: string }> {
   const { preview, why } = await setupPreview($, cfg)
-  const text = fillTemplate(await readPrompt($, 'morning-setup.md'), {
+  const now = Date.now()
+  const text = await readPrompt($, 'morning-setup.md', {
     DATA_DIR: cfg.dataDir,
+    TODAY: localDate(now, new Date(now).getTimezoneOffset()),
     PREVIEW: preview,
     PROFILE_HEADINGS: profileHeadingsBlock(),
     PROFILE: (await readProfile($, cfg)) ?? SETUP_NO_PROFILE,
@@ -379,13 +422,13 @@ async function runSetupScan($: EngineInterface, cfg: Config, days: number): Prom
     status(`morning-report: ${consent}`)
 
     const usage: UsageByModel = {}
-    const summarizer = fillTemplate(await readPrompt($, 'summarizer.md'), { PROFILE: SUMMARY_NO_PROFILE })
+    const summarizer = await readPrompt($, 'summarizer.md', { PROFILE: SUMMARY_NO_PROFILE })
     const { failed, text } = await summarizeSessions($, cfg, summarizer, extracted.sessions, usage, (done, total) =>
       status(`morning-report: summarizing ${done}/${total}`),
     )
     const scan = await complete($, {
       model: cfg.reportModel,
-      system: await readPrompt($, 'setup-scan.md'),
+      system: await readPrompt($, 'setup-scan.md', {}),
       prompt: scanPrompt({ since, until, days, extracted, failed, summaries: text }),
       maxTokens: REPORT_MAX_TOKENS,
       timeoutMs: REPORT_TIMEOUT_MS,
@@ -524,7 +567,7 @@ export const register: Register = (on, options) => {
           "Reads the person's Claude Code sessions over the last `days` days, summarizes them, writes a setup scan, and returns its file path. Takes a few minutes. Call it only after the person agreed to it in the /morning-setup interview, with the number of days they chose.",
         inputSchema: {
           type: 'object',
-          properties: { days: { type: 'integer', minimum: 1, maximum: 7 } },
+          properties: { days: { type: 'integer', minimum: SETUP_DAYS.min, maximum: SETUP_DAYS.max } },
           required: ['days'],
           additionalProperties: false,
         },
@@ -560,7 +603,7 @@ export const register: Register = (on, options) => {
     const cfg = await resolveConfig($, options)
     const now = Date.now()
     const today = localDate(now, new Date(now).getTimezoneOffset())
-    const text = fillTemplate(await readPrompt($, 'morning-review.md'), {
+    const text = await readPrompt($, 'morning-review.md', {
       DATA_DIR: cfg.dataDir,
       TODAY: today,
       LAUNCH: launchInstruction(cfg.launchCommand),

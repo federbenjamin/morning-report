@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Yesterday's Claude Code sessions as prose, one block per session, for the morning report.
 
-  extract.py --projects DIR --since ISO --until ISO [--session-logs DIR]
+  extract.py --since ISO --until ISO [--projects DIR] [--session-logs DIR]
 
 Prints JSON: {"sessions": [{"id", "project", "start", "end", "typed", "active_minutes", "text"}],
 "active_minutes": <all sessions, overlaps counted once>, "projects": [{"project", "active_minutes"}]}.
@@ -23,7 +23,7 @@ NOT_TYPED = (
     "Caveat:", "<bash-input>", "<bash-stdout>", "<bash-stderr>",
     # Agent-to-agent relays read like typed text but were written by another session.
     "From the session", "From the owning session",
-    # Machine-sent prompts: cache keepalive and the /afk relay.
+    # Machine-sent prompts: a cache keepalive, and a relay that answers for the person while they are away.
     "keepalive ping", "Last keepalive ping", "automessage:",
     # A prompt this plugin submitted (the review), as the engine records it.
     "The morning-report plugin sent a message:",
@@ -229,6 +229,7 @@ def minutes(spans):
 
 
 def extract_session(path, since, until, logs_dir):
+    """The session's record and the person's active spans in it, or None when nothing in it falls in the window."""
     session_id = os.path.basename(path)[: -len(".jsonl")]
     rows, project, typed, typed_at = [], None, 0, []
     for e in read_entries(path):
@@ -260,37 +261,36 @@ def extract_session(path, since, until, logs_dir):
     log = session_log(logs_dir, session_id)
     if log:
         lines.append(f"--- session log ---\n{log}")
+    spans = active_intervals(typed_at)
     return {
         "id": session_id,
         "project": project or os.path.basename(os.path.dirname(path)),
         "start": rows[0][0].isoformat(),
         "end": rows[-1][0].isoformat(),
         "typed": typed,
-        "active_minutes": minutes(active_intervals(typed_at)),
-        "_spans": active_intervals(typed_at),
+        "active_minutes": minutes(spans),
         "text": clip_ends("\n".join(lines), SESSION_CAP),
-    }
+    }, spans
 
 
 def extract(projects, since, until, logs_dir=None):
-    sessions = []
+    sessions, by_project, every = [], {}, []
     floor = since.timestamp()
     for path in glob.glob(os.path.join(projects, "*", "*.jsonl")):
         if os.path.getmtime(path) < floor:
             continue
-        s = extract_session(path, since, until, logs_dir)
-        if s:
+        found = extract_session(path, since, until, logs_dir)
+        if found:
+            s, spans = found
             sessions.append(s)
+            by_project.setdefault(s["project"], []).extend(spans)
+            every.extend(spans)
     sessions.sort(key=lambda s: s["start"])
-    by_project = {}
-    for s in sessions:
-        by_project.setdefault(s["project"], []).extend(s["_spans"])
     projects = sorted(
         ({"project": p, "active_minutes": minutes(merge_intervals(spans))} for p, spans in by_project.items()),
         key=lambda p: (-p["active_minutes"], p["project"]),
     )
-    spans = merge_intervals([span for s in sessions for span in s.pop("_spans")])
-    result = {"sessions": sessions, "active_minutes": minutes(spans), "projects": projects}
+    result = {"sessions": sessions, "active_minutes": minutes(merge_intervals(every)), "projects": projects}
     fit_to_output_cap(result)
     return result
 

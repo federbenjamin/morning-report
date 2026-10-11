@@ -3,6 +3,8 @@ import os
 import re
 import unittest
 
+from pipeline_ts import exported
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -16,37 +18,28 @@ def prompt(name):
     return read("prompts", name)
 
 
-def profile_headings():
-    block = re.search(r"export const PROFILE_HEADINGS = \[(.*?)\] as const", read("hooks", "pipeline.ts"), re.S)
-    if block is None:
-        raise AssertionError("no PROFILE_HEADINGS block in hooks/pipeline.ts")
-    return re.findall(r"heading: '([^']*)'", block.group(1))
-
-
-def string_constants():
-    return dict(re.findall(r"^export const ([A-Z_]+) = '([^']*)'$", read("hooks", "pipeline.ts"), re.M))
-
-
-def scan_tool():
-    match = re.search(r"^const SCAN_TOOL = '([^']+)'$", read("hooks", "register.tsx"), re.M)
-    if match is None:
-        raise AssertionError("no SCAN_TOOL in hooks/register.tsx")
-    return match.group(1)
-
-
 def plugin_name():
     return json.loads(read(".claude-plugin", "plugin.json"))["name"]
 
 
-HEADINGS = profile_headings()
-PROGRESS, WATCH = HEADINGS[2], HEADINGS[3]
-SCAN_TOOL = scan_tool()
+def prompt_names():
+    return sorted(name for name in os.listdir(os.path.join(ROOT, "prompts")) if name.endswith(".md"))
 
-# Which prompt branches on each text the hook fills in place of a missing input.
+
+PIPELINE = exported()
+HEADINGS = [h["heading"] for h in PIPELINE["PROFILE_HEADINGS"]]
+PROGRESS, WATCH = HEADINGS[2], HEADINGS[3]
+SCAN_TOOL = PIPELINE["SCAN_TOOL"]
+# The system prompt of the report call: the daily core, the Monday block, the Day-14 block.
+REPORT_PROMPTS = ("report.md", "report-weekly.md", "report-day14.md")
+WEEKLY_HEADINGS = ("## What you're doing well", "## What's not working", "## Drift")
+
+# Which prompt holds each text the hook fills in place of a missing input, or branches on.
 SENTINEL_READERS = {
     "SETUP_NO_PROFILE": "morning-setup.md",
     "SCAN_NO_SESSIONS": "morning-setup.md",
     "SUMMARY_NO_PROFILE": "summarizer.md",
+    "IS_THIS_WORKING": "report-day14.md",
 }
 
 
@@ -71,7 +64,7 @@ class ProfileHeadingsTest(unittest.TestCase):
         self.assertEqual(len(set(HEADINGS)), 5)
 
     def test_reader_prompts_name_the_headings_in_bold(self):
-        report = prompt("report.md")
+        report = "".join(prompt(name) for name in REPORT_PROMPTS)
         for heading in HEADINGS:
             self.assertIn(f"**{heading}**", report)
         summarizer = prompt("summarizer.md")
@@ -80,7 +73,7 @@ class ProfileHeadingsTest(unittest.TestCase):
 
     def test_no_bold_phrase_in_a_reader_prompt_misspells_a_heading(self):
         by_letters = {letters(h): h for h in HEADINGS}
-        for name in ("report.md", "summarizer.md"):
+        for name in (*REPORT_PROMPTS, "summarizer.md"):
             for phrase in bold_phrases(prompt(name)):
                 heading = by_letters.get(letters(phrase))
                 if heading is not None:
@@ -89,8 +82,6 @@ class ProfileHeadingsTest(unittest.TestCase):
     def test_setup_prompt_takes_the_headings_from_the_fill_only(self):
         text = prompt("morning-setup.md")
         self.assertEqual(text.count("{{PROFILE_HEADINGS}}"), 1)
-        for placeholder in ("{{DATA_DIR}}", "{{PREVIEW}}", "{{PROFILE}}"):
-            self.assertIn(placeholder, text)
         self.assertNotIn("{{SCAN}}", text)
         for heading in HEADINGS:
             self.assertNotIn(heading, text)
@@ -99,10 +90,27 @@ class ProfileHeadingsTest(unittest.TestCase):
 
 class SentinelTest(unittest.TestCase):
     def test_each_prompt_holds_the_exact_text_the_hook_fills_for_a_missing_input(self):
-        constants = string_constants()
         for name, reader in SENTINEL_READERS.items():
-            self.assertIn(name, constants, f"hooks/pipeline.ts exports no {name}")
-            self.assertIn(constants[name], prompt(reader), f"{reader} does not branch on {name}")
+            self.assertIn(name, PIPELINE, f"hooks/pipeline.ts exports no {name}")
+            self.assertIn(PIPELINE[name], prompt(reader), f"{reader} does not hold {name}")
+
+
+class PromptContractTest(unittest.TestCase):
+    def test_each_prompts_slots_are_the_keys_its_hook_fills(self):
+        fills = PIPELINE["PROMPT_FILLS"]
+        self.assertEqual(sorted(fills), prompt_names())
+        for name in prompt_names():
+            slots = set(re.findall(r"\{\{([A-Z_]+)\}\}", prompt(name)))
+            self.assertEqual(slots, set(fills[name]), f"{name} slots differ from PROMPT_FILLS")
+
+    def test_each_report_part_the_review_names_is_in_the_report_template(self):
+        review, report = prompt("morning-review.md"), prompt("report.md")
+        parts = set(re.findall(r'"([A-Z][a-z ]+)"', review))
+        self.assertTrue({"Fast track", "Questions", "Calls to make"} <= parts)
+        for part in parts:
+            self.assertRegex(report, rf"(?m)^\s*(## {re.escape(part)}$|{re.escape(part)}:)", f"report.md has no {part}")
+        self.assertIn("{{call N}}", review)
+        self.assertIn("{{call 1}}", report)
 
 
 class ReportPromptTest(unittest.TestCase):
@@ -120,14 +128,10 @@ class ReportPromptTest(unittest.TestCase):
             "One thing to remember all day:",
         ):
             self.assertIn(heading, text)
-        for heading in (
-            "## What you're doing well",
-            "## What's not working",
-            "## Drift",
-        ):
-            self.assertRegex(text, re.compile(re.escape(heading) + r".*when the profile asks", re.I | re.S))
-        self.assertRegex(text, r"(?is)Day 14.*## Is this working\?")
-        self.assertIn("run `/morning-setup` to restate it", text)
+        day14 = prompt("report-day14.md")
+        self.assertNotIn(PIPELINE["IS_THIS_WORKING"], text)
+        self.assertRegex(day14, r"(?s)`## Is this working\?` right before `## Questions`")
+        self.assertIn("run `/morning-setup` to restate it", day14)
 
     def test_profile_progress_rules_replace_the_fixed_outward_scoreboard_and_tooling_line(self):
         text = prompt("report.md")
@@ -136,7 +140,7 @@ class ReportPromptTest(unittest.TestCase):
         self.assertNotIn("Outward is the scoreboard", text)
         self.assertNotIn("**Tooling this week:**", text)
         self.assertNotRegex(text, r"\boperator\b")
-        self.assertLessEqual(len(text.split()), 1617)
+        self.assertLessEqual(len(text.split()), 1269)
 
     def test_no_progress_split_when_counts_as_progress_is_none(self):
         text = prompt("report.md")
@@ -172,12 +176,15 @@ class ReportPromptTest(unittest.TestCase):
         self.assertNotIn("names the mistake and the fix", text)
         self.assertIn("never a reproach", text)
 
-    def test_watch_for_sections_are_weekly(self):
-        text = prompt("report.md")
+    def test_watch_for_sections_live_only_in_the_monday_block(self):
+        text, weekly = prompt("report.md"), prompt("report-weekly.md")
 
-        for heading in ("## What you're doing well", "## What's not working", "## Drift"):
-            self.assertRegex(text, re.escape(heading) + r"\n<when the profile asks; Mondays\.")
-        self.assertIn("written on Monday's report only, covering the week, and left out on other days", text)
+        for heading in WEEKLY_HEADINGS:
+            self.assertNotIn(heading, text)
+            self.assertIn(heading, weekly)
+        self.assertNotRegex(text, r"(?i)monday")
+        self.assertIn(f"**{WATCH}** names anything", weekly)
+        self.assertIn("Leave out any it does not ask for", weekly)
 
     def test_a_quiet_day_keeps_every_core_section(self):
         rule = line_with(prompt("report.md"), "**Quiet day.**")
@@ -219,7 +226,7 @@ class SummarizerPromptTest(unittest.TestCase):
         text = prompt("summarizer.md")
 
         rule = line_with(text, "Leave the `counts:` line out")
-        self.assertIn(string_constants()["SUMMARY_NO_PROFILE"], rule)
+        self.assertIn(PIPELINE["SUMMARY_NO_PROFILE"], rule)
         self.assertIn(f"**{PROGRESS}** reads `(none)`", rule)
 
     def test_summarizer_uses_a_generic_stream_form(self):
@@ -235,7 +242,7 @@ class MorningSetupPromptTest(unittest.TestCase):
         text = prompt("morning-setup.md")
 
         self.assertIn("(none)", text)
-        self.assertRegex(text, r"profile-<[^>]*YYYY-MM-DD[^>]*>-old\.md")
+        self.assertIn("profile-{{TODAY}}-old.md", text)
         self.assertRegex(text, r"(?is)show.*once.*stop")
         self.assertNotRegex(text, r"\boperator\b")
         self.assertIn("/morning-setup schedule", text)
@@ -247,7 +254,8 @@ class MorningSetupPromptTest(unittest.TestCase):
         consent = text[: round_one]
         self.assertIn("{{PREVIEW}}", consent)
         self.assertIn("AskUserQuestion", consent)
-        self.assertRegex(consent, r"(?is)how many days.*1 to 7.*skip")
+        days = PIPELINE["SETUP_DAYS"]
+        self.assertRegex(consent, rf"(?is)how many days.*from {days['min']} to {days['max']}.*skip")
         self.assertEqual(text.count(f"`{SCAN_TOOL}`"), 1)
         tool = text.index(f"`{SCAN_TOOL}`")
         self.assertGreater(tool, round_one)
@@ -264,7 +272,7 @@ class MorningSetupPromptTest(unittest.TestCase):
 
     def test_every_path_without_a_scan_skips_round_two(self):
         text = prompt("morning-setup.md")
-        marker = string_constants()["SCAN_NO_SESSIONS"]
+        marker = PIPELINE["SCAN_NO_SESSIONS"]
         round_one, round_two = text.index("Round one:"), text.index("Round two:")
 
         self.assertEqual(text.count(marker), 1)
@@ -280,7 +288,7 @@ class MorningSetupPromptTest(unittest.TestCase):
 
 class SetupCommandFormTest(unittest.TestCase):
     def test_no_prompt_or_readme_names_a_setup_argument(self):
-        texts = {name: prompt(name) for name in os.listdir(os.path.join(ROOT, "prompts")) if name.endswith(".md")}
+        texts = {name: prompt(name) for name in prompt_names()}
         texts["README.md"] = read("README.md")
         for name, text in texts.items():
             for form in ("/morning-setup goals", "/morning-setup scan", "scan [days]"):

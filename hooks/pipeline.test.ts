@@ -44,6 +44,17 @@ import {
   renderPlist,
   REPORT_FIRES,
   stderrHead,
+  weekdayOf,
+  weekRunDays,
+  parseRunRecord,
+  weekToDate,
+  historyBlock,
+  reportBlocks,
+  IS_THIS_WORKING,
+  answeredCount,
+  factsBlock,
+  reportPrompt,
+  type HistoryDay,
 } from './pipeline'
 
 const HOUR = 3600_000
@@ -524,4 +535,219 @@ test('parseExtracted returns the extract and names the key a shape change droppe
   expect(() => parseExtracted('null')).toThrow('the result is not an object')
   expect(() => parseExtracted('[]')).toThrow('the result is not an object')
   expect(() => parseExtracted('not json')).toThrow('extract output is not JSON')
+})
+
+test('weekdayOf names the weekday of a calendar date, including across a month and a leap day', async () => {
+  expect(weekdayOf('2026-10-05')).toBe('Monday')
+  expect(weekdayOf('2026-10-06')).toBe('Tuesday')
+  expect(weekdayOf('2026-10-11')).toBe('Sunday')
+  expect(weekdayOf('2028-02-29')).toBe('Tuesday')
+})
+
+const runNames = (...days: string[]) => days.map(d => `${d}-run.json`)
+
+test('a Monday report sums the Tuesday to Sunday runs of the week it closes, and not the previous Monday', async () => {
+  const names = runNames('2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11', '2026-10-12')
+  expect(weekRunDays(names, '2026-10-12')).toEqual(['2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11'])
+})
+
+test('a Tuesday report picks no earlier run, since it covers the Monday that starts the week', async () => {
+  expect(weekRunDays(runNames('2026-10-06', '2026-10-11', '2026-10-12'), '2026-10-13')).toEqual([])
+})
+
+test('a mid-week report picks the runs from Tuesday up to the day before its date', async () => {
+  const names = runNames('2026-10-09', '2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16')
+  expect(weekRunDays(names, '2026-10-15')).toEqual(['2026-10-13', '2026-10-14'])
+  expect(weekRunDays(names, '2026-10-14')).toEqual(['2026-10-13'])
+})
+
+test('weekRunDays sorts its days and ignores names that are not a dated run record', async () => {
+  const names = ['2026-10-08-run.json', '2026-10-07.md', 'notes-run.json', '2026-10-07-summaries.md', '2026-10-7-run.json', '2026-10-07-run.json.bak', '2026-10-07-run.json']
+  expect(weekRunDays(names, '2026-10-09')).toEqual(['2026-10-07', '2026-10-08'])
+})
+
+test('parseRunRecord reads the active minutes and the per-project minutes of a run record', async () => {
+  const projects = [{ project: '/a', active_minutes: 30 }]
+  expect(parseRunRecord(JSON.stringify({ since: 's', activeMinutes: 45, projects }))).toEqual({ activeMinutes: 45, projects })
+})
+
+test('parseRunRecord gives an old run record without projects an empty project list', async () => {
+  expect(parseRunRecord(JSON.stringify({ activeMinutes: 45 }))).toEqual({ activeMinutes: 45, projects: [] })
+  expect(parseRunRecord(JSON.stringify({ activeMinutes: 45, projects: 'x' }))).toEqual({ activeMinutes: 45, projects: [] })
+})
+
+test('parseRunRecord drops a malformed project entry and keeps the good ones', async () => {
+  const good = { project: '/a', active_minutes: 30 }
+  const raw = JSON.stringify({ activeMinutes: 45, projects: [good, null, 'p', { project: '/b' }, { active_minutes: 3 }, { project: '/c', active_minutes: '9' }, 7] })
+  expect(parseRunRecord(raw)).toEqual({ activeMinutes: 45, projects: [good] })
+})
+
+test('parseRunRecord returns undefined for text that is not JSON, not an object, or has no numeric activeMinutes', async () => {
+  for (const raw of ['', 'not json', 'null', '[]', '7', '{}', JSON.stringify({ activeMinutes: '45' }), JSON.stringify({ active_minutes: 45 })]) {
+    expect(parseRunRecord(raw)).toBeUndefined()
+  }
+})
+
+test('weekToDate adds tonight to the earlier runs, per project too, with the most time first', async () => {
+  const earlier = [
+    { activeMinutes: 100, projects: [{ project: '/a', active_minutes: 40 }, { project: '/b', active_minutes: 60 }] },
+    { activeMinutes: 30, projects: [{ project: '/a', active_minutes: 30 }] },
+  ]
+  const tonight: Extracted = { sessions: [], active_minutes: 50, projects: [{ project: '/c', active_minutes: 50 }, { project: '/a', active_minutes: 5 }] }
+  expect(weekToDate(earlier, tonight)).toEqual({
+    minutes: 180,
+    projects: [
+      { project: '/a', active_minutes: 75 },
+      { project: '/b', active_minutes: 60 },
+      { project: '/c', active_minutes: 50 },
+    ],
+  })
+})
+
+test('weekToDate with no earlier run is tonight alone, and a run with no projects still counts its minutes', async () => {
+  const tonight: Extracted = { sessions: [], active_minutes: 20, projects: [{ project: '/a', active_minutes: 20 }] }
+  expect(weekToDate([], tonight)).toEqual({ minutes: 20, projects: [{ project: '/a', active_minutes: 20 }] })
+  expect(weekToDate([{ activeMinutes: 15, projects: [] }], tonight)).toEqual({ minutes: 35, projects: [{ project: '/a', active_minutes: 20 }] })
+})
+
+const FAST_TRACK = ['## Fast track', 'Do the thing.', '', '  ```', '  ## Not a heading', '  say hi', '  ```', 'after the fence']
+const report = (...sections: string[][]) => sections.flat().join('\n')
+
+test('historyBlock keeps the latest report whole and strips the Fast track from earlier ones', async () => {
+  const body = report(['## Working on', 'x'], FAST_TRACK, ['## Questions', 'q?'])
+  const block = historyBlock([
+    { day: '2026-10-05', report: body, answers: 'a1' },
+    { day: '2026-10-06', report: body, answers: undefined },
+  ])
+  const [first, second] = block.split('\n\n---\n\n')
+  expect(first).toBe('## Report 2026-10-05\n## Working on\nx\n## Questions\nq?\n\n## Answers 2026-10-05\na1')
+  expect(second).toBe(`## Report 2026-10-06\n${body}\n\n## Answers 2026-10-06\n(not answered)`)
+})
+
+test('a level-two line inside an indented code block does not end the Fast track section being dropped', async () => {
+  const days: HistoryDay[] = [
+    { day: '2026-10-05', report: report(['## Working on', 'x'], FAST_TRACK, ['## Questions', 'q?']), answers: '' },
+    { day: '2026-10-06', report: 'latest', answers: '' },
+  ]
+  const block = historyBlock(days)
+  expect(block).not.toContain('Not a heading')
+  expect(block).not.toContain('after the fence')
+  expect(block).toContain('## Questions\nq?')
+})
+
+test('a Fast track heading inside a code block of another section is left in place', async () => {
+  const body = report(['## Notes', '```', '## Fast track', 'quoted', '```', 'tail'], ['## Questions', 'q?'])
+  const block = historyBlock([{ day: '2026-10-05', report: body, answers: '' }, { day: '2026-10-06', report: 'latest', answers: '' }])
+  expect(block).toContain('quoted')
+  expect(block).toContain('tail')
+})
+
+test('a Fast track that is the last section of an earlier report is dropped to the end', async () => {
+  const block = historyBlock([{ day: '2026-10-05', report: report(['## Questions', 'q?'], FAST_TRACK), answers: 'a' }, { day: '2026-10-06', report: 'latest', answers: 'b' }])
+  expect(block.split('\n\n---\n\n')[0]).toBe('## Report 2026-10-05\n## Questions\nq?\n\n## Answers 2026-10-05\na')
+})
+
+test('historyBlock of no days is empty, and a sole report keeps its Fast track', async () => {
+  expect(historyBlock([])).toBe('')
+  expect(historyBlock([{ day: '2026-10-05', report: FAST_TRACK.join('\n'), answers: undefined }])).toContain('Do the thing.')
+})
+
+const reports = (n: number, over: Record<number, string> = {}): HistoryDay[] =>
+  Array.from({ length: n }, (_, i) => ({ day: `d${i}`, report: over[i] ?? '## Questions\nq', answers: undefined }))
+
+test('the week in review applies on a Monday report date only', async () => {
+  expect(reportBlocks('2026-10-12', []).weekly).toBe(true)
+  for (const day of ['2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16', '2026-10-17', '2026-10-18']) {
+    expect(reportBlocks(day, []).weekly).toBe(false)
+  }
+})
+
+test('the Is this working check-in waits for 13 earlier reports', async () => {
+  expect(reportBlocks('2026-10-13', reports(12)).day14).toBe(false)
+  expect(reportBlocks('2026-10-13', reports(13)).day14).toBe(true)
+  expect(reportBlocks('2026-10-13', reports(14)).day14).toBe(true)
+})
+
+test('the Is this working check-in is skipped when any of the last 7 reports holds it, but not the 8th from last', async () => {
+  const has = `## Working on\nx\n${IS_THIS_WORKING}\nyes`
+  expect(IS_THIS_WORKING).toBe('## Is this working?')
+  expect(reportBlocks('2026-10-13', reports(14, { 13: has })).day14).toBe(false)
+  expect(reportBlocks('2026-10-13', reports(14, { 7: has })).day14).toBe(false)
+  expect(reportBlocks('2026-10-13', reports(14, { 6: has })).day14).toBe(true)
+})
+
+test('only a line that is exactly the Is this working heading blocks the check-in', async () => {
+  for (const near of ['## Is this working? (draft)', 'Is this working?', '### Is this working?', 'see ## Is this working? above']) {
+    expect(reportBlocks('2026-10-13', reports(14, { 13: near })).day14).toBe(true)
+  }
+})
+
+test('answeredCount counts the reports that have an answers file, even an empty one', async () => {
+  const days: HistoryDay[] = [
+    { day: 'a', report: '', answers: 'x' },
+    { day: 'b', report: '', answers: undefined },
+    { day: 'c', report: '', answers: '' },
+  ]
+  expect(answeredCount(days)).toBe(2)
+  expect(answeredCount([])).toBe(0)
+})
+
+test('factsBlock puts the extra lines after the not-summarized line, and none by default', async () => {
+  const ex: Extracted = { sessions: [session('a', 1)], active_minutes: 60, projects: [{ project: '/p', active_minutes: 60 }] }
+  const base = [
+    '# Computed facts (from timestamps; use these, never sum session minutes yourself)',
+    '- sessions: 1',
+    '- active time across all sessions, overlaps counted once: 1.0h',
+    '- time by project, overlaps within a project counted once:',
+    '  - /p: 1.0h',
+    '- sessions not summarized: 2',
+  ]
+  expect(factsBlock(ex, 2)).toBe(base.join('\n'))
+  expect(factsBlock(ex, 2, ['- extra one', '- extra two'])).toBe([...base, '- extra one', '- extra two'].join('\n'))
+})
+
+const reportInput = () => ({
+  today: '2026-10-12',
+  since: 'S',
+  until: 'U',
+  extracted: { sessions: [session('a', 1)], active_minutes: 60, projects: [{ project: '/p', active_minutes: 60 }] } as Extracted,
+  failed: 0,
+  week: { minutes: 150, projects: [{ project: '/p', active_minutes: 90 }, { project: '/q', active_minutes: 60 }] },
+  priorities: 'ship it',
+  history: [{ day: '2026-10-11', report: 'R', answers: 'A' }] as HistoryDay[],
+  summaries: ['## s1', '## s2'],
+})
+
+test('reportPrompt opens with the date and weekday, then the window with the earlier-report count', async () => {
+  const lines = reportPrompt(reportInput()).split('\n\n')
+  expect(lines[0]).toBe('Today is 2026-10-12 (Monday).')
+  expect(lines[1]).toBe('Window: S → U. 1 earlier report on file.')
+  expect(reportPrompt({ ...reportInput(), history: [] })).toContain('Window: S → U. 0 earlier reports on file.')
+})
+
+test('reportPrompt lists the week-to-date time and its projects inside the computed facts', async () => {
+  const prompt = reportPrompt(reportInput())
+  expect(prompt).toContain(
+    [
+      '- sessions not summarized: 0',
+      '- active time this week, from Monday to the end of this window: 2.5h',
+      '- time by project this week:',
+      '  - /p: 1.5h',
+      '  - /q: 1.0h',
+    ].join('\n'),
+  )
+})
+
+test('reportPrompt carries the priorities, the history, and the summaries under their headings', async () => {
+  const prompt = reportPrompt(reportInput())
+  expect(prompt).toContain('# Standing priorities\nship it')
+  expect(prompt).toContain('only the latest keeps its Fast track)\n## Report 2026-10-11\nR\n\n## Answers 2026-10-11\nA')
+  expect(prompt.endsWith('# Session summaries for the window\n## s1\n\n## s2')).toBe(true)
+})
+
+test('reportPrompt says so when there are no priorities, no earlier report, or no sessions', async () => {
+  const prompt = reportPrompt({ ...reportInput(), priorities: '', history: [], summaries: [] })
+  expect(prompt).toContain('# Standing priorities\n(none set)')
+  expect(prompt).toContain('\n(none yet: this is the first report)')
+  expect(prompt.endsWith('# Session summaries for the window\n(no sessions in the window)')).toBe(true)
 })

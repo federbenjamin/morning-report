@@ -24,6 +24,9 @@ const PROMPTS: Record<string, string> = {
   'summarizer.md': 'SUMMARIZER profile={{PROFILE}}',
   'setup-scan.md': 'SCAN SYSTEM',
   'morning-setup.md': 'SETUP preview={{PREVIEW}} profile={{PROFILE}}',
+  'report.md': 'REPORT profile={{PROFILE}}',
+  'report-weekly.md': 'WEEKLY',
+  'report-day14.md': 'DAY14 answered={{ANSWERED}}',
 }
 
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -45,6 +48,7 @@ type World = {
   extract?: string | Proc | Error
   profile?: string | Error
   files?: Record<string, string>
+  mtimes?: Record<string, number>
   env?: Record<string, string>
   proc?: (argv: readonly string[]) => Proc | undefined
   model?: (call: ModelCall) => ModelAnswer | Promise<ModelAnswer>
@@ -64,10 +68,20 @@ type Seen = {
   toasts: string[]
   status: (string | undefined)[]
   tools: ToolSeen[]
+  // The value last written to the remember line the band above the prompt shows; null when it shows nothing.
+  remember: unknown
 }
 
 function world(on: On, w: World = {}): Seen {
-  const seen: Seen = { argv: [], cwds: [], models: [], writes: new Map(), submits: [], toasts: [], status: [], tools: [] }
+  const seen: Seen = { argv: [], cwds: [], models: [], writes: new Map(), submits: [], toasts: [], status: [], tools: [], remember: null }
+  const held = new Map<string, { value: unknown; version: number }>()
+  on('state.get', async (_$, e) => ({ value: { value: held.get(`${e.plugin}/${e.key}`)?.value, version: held.get(`${e.plugin}/${e.key}`)?.version ?? 0 } }) as never)
+  on('state.set', async (_$, e) => {
+    const version = (held.get(`${e.plugin}/${e.key}`)?.version ?? 0) + 1
+    held.set(`${e.plugin}/${e.key}`, { value: e.value, version })
+    seen.remember = e.value
+    return { value: { isSet: true, version } } as never
+  })
   const files: Record<string, string> = { ...w.files }
   if (typeof w.profile === 'string') files[`${DATA}/profile.md`] = w.profile
   const homeFails = w.home
@@ -84,6 +98,12 @@ function world(on: On, w: World = {}): Seen {
     return { value: { exitCode: r.exitCode, stdout: r.stdout ?? '', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.exists', async (_$, e) => ({ value: e.path in files || (e.path === `${DATA}/profile.md` && w.profile instanceof Error) }))
+  on('fs.list', async (_$, e) => ({
+    value: Object.keys(files)
+      .filter(f => f.startsWith(`${e.path}/`) && !f.slice(e.path.length + 1).includes('/'))
+      .map(f => ({ name: f.slice(e.path.length + 1), kind: 'file', size: 0, mtimeMs: 0, isLink: false })),
+  }) as never)
+  on('fs.stat', async (_$, e) => ({ value: { kind: 'file', size: 0, mtimeMs: w.mtimes?.[e.path] ?? 0 } }) as never)
   on('fs.read', async (_$, e) => {
     if (e.path === `${DATA}/profile.md` && w.profile instanceof Error) return { deny: w.profile.message }
     const prompt = /\/prompts\/([^/]+)$/.exec(e.path)?.[1]
@@ -408,6 +428,180 @@ test('session.start with a profile shows no setup toast', OPTIONS, async ($, on)
   on('session.start', async () => ({ cwd: '/' }))
   await $.session.start(START)
   expect(seen.toasts).toEqual([])
+})
+
+const REMEMBER_LINE = 'One thing to remember all day: ship the parser'
+const REPORT = `# Report\n\n## Working on\nx\n\n## Questions\nq?\n\n${REMEMBER_LINE}\n`
+const SUMMARY = '## a — did a thing'
+// A run of the report model answers REPORT; the summary calls answer SUMMARY.
+const reportModel = (report = REPORT) => (call: ModelCall): ModelAnswer => ({ isAnswered: true, text: call.system.startsWith('REPORT') ? report : SUMMARY })
+const reportCalls = (seen: Seen) => seen.models.filter(m => m.system.startsWith('REPORT'))
+
+const morningRun = async ($: Engine, args = ''): Promise<string> =>
+  (await $.command.run({ command: 'morning-run', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })).text ?? ''
+
+// A backfill picks its report date and clock, so the weekday does not depend on when the test runs.
+const backfill = (date: string, until = `${date}T05:00:00Z`) => `--backfill ${date} --until ${until}`
+const MONDAY = '2026-10-12'
+const TUESDAY = '2026-10-13'
+const TODAY_LOCAL = () => {
+  const now = Date.now()
+  return new Date(now - new Date(now).getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+}
+
+const runRecord = (activeMinutes: number, projects?: { project: string; active_minutes: number }[]) =>
+  JSON.stringify({ activeMinutes, ...(projects ? { projects } : {}) })
+
+const MORNING_FILES = { [`${DATA}/profile.md`]: 'mine', [RUNS]: '' }
+
+test('/morning-run writes the report, the summaries and the run record with its projects, then state.json', OPTIONS, async ($, on) => {
+  const seen = world(on, { extract: extractOf([small('a'), small('b')]), profile: 'mine', files: { [RUNS]: '' }, model: reportModel() })
+  const today = TODAY_LOCAL()
+  expect(await morningRun($)).toBe(`wrote ${DATA}/${today}.md`)
+  expect([...seen.writes.keys()]).toEqual([`${RUNS}/${today}-summaries.md`, `${RUNS}/${today}-run.json`, `${DATA}/${today}.md`, `${DATA}/state.json`])
+  expect(seen.writes.get(`${DATA}/${today}.md`)).toBe(REPORT.trim() + '\n')
+  expect(seen.writes.get(`${RUNS}/${today}-summaries.md`)).toBe(`${SUMMARY}\n`)
+  const record = JSON.parse(seen.writes.get(`${RUNS}/${today}-run.json`)!)
+  expect(record.activeMinutes).toBe(10)
+  expect(record.projects).toEqual([{ project: '/p', active_minutes: 10 }])
+  expect(record.sessions).toBe(2)
+  expect(JSON.parse(seen.writes.get(`${DATA}/state.json`)!).reportDate).toBe(today)
+  expect(seen.remember).toBe('ship the parser')
+})
+
+test('a report cut off before its remember line fails and writes no report, run record, summaries or state', OPTIONS, async ($, on) => {
+  const seen = world(on, { extract: extractOf([small('a')]), profile: 'mine', files: { [RUNS]: '' }, model: reportModel('# Report\n\n## Questions\nq?') })
+  const text = await morningRun($)
+  expect(text).toContain('without its last line')
+  expect(seen.writes.size).toBe(0)
+})
+
+test('a backfill writes its report, summaries and run record but never state.json', OPTIONS, async ($, on) => {
+  const seen = world(on, { extract: extractOf([small('a')]), profile: 'mine', files: { [RUNS]: '' }, model: reportModel() })
+  expect(await morningRun($, backfill(TUESDAY))).toBe(`backfilled ${DATA}/${TUESDAY}.md`)
+  expect([...seen.writes.keys()].sort()).toEqual([`${DATA}/${TUESDAY}.md`, `${RUNS}/${TUESDAY}-run.json`, `${RUNS}/${TUESDAY}-summaries.md`])
+})
+
+test('the report system prompt is report.md alone on a Tuesday with few earlier reports', OPTIONS, async ($, on) => {
+  const seen = world(on, { profile: 'mine', files: { [RUNS]: '' }, model: reportModel() })
+  await morningRun($, backfill(TUESDAY))
+  expect(reportCalls(seen).map(c => c.system)).toEqual(['REPORT profile=mine'])
+})
+
+test('the report system prompt adds the weekly part after report.md on a Monday report date', OPTIONS, async ($, on) => {
+  const seen = world(on, { profile: 'mine', files: { [RUNS]: '' }, model: reportModel() })
+  await morningRun($, backfill(MONDAY))
+  expect(reportCalls(seen).map(c => c.system)).toEqual(['REPORT profile=mine\n\nWEEKLY'])
+})
+
+const earlierReports = (n: number, over: Record<number, string> = {}, answered = 0) => {
+  const files: Record<string, string> = {}
+  for (let i = 0; i < n; i++) {
+    const day = new Date(Date.parse('2026-09-28T00:00:00Z') + i * DAY_MS).toISOString().slice(0, 10)
+    files[`${DATA}/${day}.md`] = over[i] ?? '## Questions\nq'
+    if (i < answered) files[`${DATA}/${day}-answers.md`] = 'a'
+  }
+  return files
+}
+
+test('the report system prompt adds the day-14 check-in with answered-of-reports filled, once there are 13 reports', OPTIONS, async ($, on) => {
+  const seen = world(on, { profile: 'mine', files: { [RUNS]: '', ...earlierReports(13, {}, 4) }, model: reportModel() })
+  await morningRun($, backfill('2026-10-12'))
+  expect(reportCalls(seen).map(c => c.system)).toEqual(['REPORT profile=mine\n\nWEEKLY\n\nDAY14 answered=4 of 13'])
+})
+
+test('no day-14 part with only 12 earlier reports', OPTIONS, async ($, on) => {
+  const twelve = world(on, { profile: 'mine', files: { [RUNS]: '', ...earlierReports(12) }, model: reportModel() })
+  await morningRun($, backfill(TUESDAY))
+  expect(reportCalls(twelve).map(c => c.system)).toEqual(['REPORT profile=mine'])
+})
+
+test('no day-14 part when one of the last 7 reports already holds the check-in', OPTIONS, async ($, on) => {
+  const seen = world(on, { profile: 'mine', files: { [RUNS]: '', ...earlierReports(14, { 12: '## Is this working?\nyes' }) }, model: reportModel() })
+  await morningRun($, backfill(TUESDAY))
+  expect(reportCalls(seen).map(c => c.system)).toEqual(['REPORT profile=mine'])
+})
+
+test('the report prompt sums active time this week from earlier run records plus the extract being reported', OPTIONS, async ($, on) => {
+  const seen = world(on, {
+    extract: extractOf([small('a')]),
+    profile: 'mine',
+    files: {
+      [RUNS]: '',
+      [`${RUNS}/2026-10-05-run.json`]: runRecord(1000, [{ project: '/p', active_minutes: 1000 }]),
+      [`${RUNS}/2026-10-06-run.json`]: runRecord(60, [{ project: '/p', active_minutes: 30 }, { project: '/q', active_minutes: 30 }]),
+      [`${RUNS}/2026-10-07-run.json`]: runRecord(60),
+      [`${RUNS}/2026-10-08-run.json`]: 'not json',
+      [`${RUNS}/2026-10-12-run.json`]: runRecord(1000),
+      [`${RUNS}/2026-10-09-summaries.md`]: 'ignored',
+    },
+    model: reportModel(),
+  })
+  await morningRun($, backfill('2026-10-09'))
+  // 10-06 (60) + 10-07 (60) + tonight (5); the unreadable 10-08 counts as nothing, and 10-05 and 10-12 are outside the week.
+  const prompt = reportCalls(seen)[0]!.prompt
+  expect(prompt).toContain('- active time this week, from Monday to the end of this window: 2.1h')
+  expect(prompt).toContain('- time by project this week:\n  - /p: 0.6h\n  - /q: 0.5h')
+})
+
+test('the report prompt reads the week from the extract alone when there is no runs folder', OPTIONS, async ($, on) => {
+  const seen = world(on, { extract: extractOf([small('a')]), profile: 'mine', model: reportModel() })
+  await morningRun($, backfill(TUESDAY))
+  expect(reportCalls(seen)[0]!.prompt).toContain('- active time this week, from Monday to the end of this window: 0.1h')
+})
+
+test('the report prompt strips the Fast track from every earlier report but the latest', OPTIONS, async ($, on) => {
+  const fast = (n: string) => `## Questions\nq${n}\n\n## Fast track\nfast${n}\n\n## Last\nz`
+  const seen = world(on, { profile: 'mine', files: { [RUNS]: '', [`${DATA}/2026-10-10.md`]: fast('1'), [`${DATA}/2026-10-11.md`]: fast('2') }, model: reportModel() })
+  await morningRun($, backfill(MONDAY))
+  const prompt = reportCalls(seen)[0]!.prompt
+  expect(prompt).not.toContain('fast1')
+  expect(prompt).toContain('fast2')
+})
+
+const remembered = async ($: Engine, on: On, w: World) => {
+  const seen = world(on, { profile: 'mine', ...w })
+  on('session.start', async () => ({ cwd: '/' }))
+  await $.session.start(START)
+  return { seen, line: seen.remember }
+}
+
+const STATE = JSON.stringify({ watermark: 'w', prevWatermark: 'p', reportDate: '2026-10-11' })
+const HOURS = 3600_000
+
+test('session.start shows the remember line of the report state.json names', OPTIONS, async ($, on) => {
+  const { line } = await remembered($, on, {
+    files: { [`${DATA}/state.json`]: STATE, [`${DATA}/2026-10-11.md`]: REPORT, [`${DATA}/2026-10-12.md`]: '# a backfill\nOne thing to remember all day: wrong' },
+    mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() - 35 * HOURS },
+  })
+  expect(line).toBe('ship the parser')
+})
+
+test('session.start shows no remember line once the named report is older than 36 hours', OPTIONS, async ($, on) => {
+  const { line } = await remembered($, on, {
+    files: { [`${DATA}/state.json`]: STATE, [`${DATA}/2026-10-11.md`]: REPORT },
+    mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() - 37 * HOURS },
+  })
+  expect(line).toBeNull()
+})
+
+for (const [why, files] of [
+  ['there is no state.json', { [`${DATA}/2026-10-11.md`]: REPORT }],
+  ['state.json names no reportDate', { [`${DATA}/state.json`]: JSON.stringify({ watermark: 'w' }), [`${DATA}/2026-10-11.md`]: REPORT }],
+  ['the report state.json names is missing', { [`${DATA}/state.json`]: STATE }],
+] as const) {
+  test(`session.start shows no remember line when ${why}`, OPTIONS, async ($, on) => {
+    const { line } = await remembered($, on, { files, mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() } })
+    expect(line).toBeNull()
+  })
+}
+
+test('session.start shows no remember line from a report that lacks the line, and never reads a remember.txt', OPTIONS, async ($, on) => {
+  const { line } = await remembered($, on, {
+    files: { [`${DATA}/state.json`]: STATE, [`${DATA}/2026-10-11.md`]: '# Report\nno line', [`${DATA}/remember.txt`]: 'stale' },
+    mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() },
+  })
+  expect(line).toBeNull()
 })
 
 const NAMES = launchdNames(HOME, '501')
