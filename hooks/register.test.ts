@@ -4,6 +4,7 @@ import {
   jobPluginCheck,
   launchdNames,
   MANUAL_RUN_TEXT,
+  REMEMBER_SYNC_MS,
   renderPlist,
   SCAN_NO_SESSIONS,
   SCAN_UNREADABLE,
@@ -70,10 +71,12 @@ type Seen = {
   tools: ToolSeen[]
   // The value last written to the remember line the band above the prompt shows; null when it shows nothing.
   remember: unknown
+  // A new session starts with no `$.state`; the plugin's `$.store` stays.
+  newSession: () => void
 }
 
 function world(on: On, w: World = {}): Seen {
-  const seen: Seen = { argv: [], cwds: [], models: [], writes: new Map(), submits: [], toasts: [], status: [], tools: [], remember: null }
+  const seen: Seen = { argv: [], cwds: [], models: [], writes: new Map(), submits: [], toasts: [], status: [], tools: [], remember: null, newSession: () => held.clear() }
   const held = new Map<string, { value: unknown; version: number }>()
   on('state.get', async (_$, e) => ({ value: { value: held.get(`${e.plugin}/${e.key}`)?.value, version: held.get(`${e.plugin}/${e.key}`)?.version ?? 0 } }) as never)
   on('state.set', async (_$, e) => {
@@ -602,6 +605,81 @@ test('session.start shows no remember line from a report that lacks the line, an
     mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() },
   })
   expect(line).toBeNull()
+})
+
+const BAND = {
+  plugin: 'morning-report',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  surface: 'terminal',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+// A session whose report named `line`.
+const bandWorld = async ($: Engine, on: On, line: string, store: Record<string, unknown> = {}) => {
+  const clock = mock.clock(on)
+  const stored = new Map(Object.entries(store))
+  on('store.get', async (_$, e) => ({ value: stored.get(e.key) }) as never)
+  on('store.set', async (_$, e) => {
+    stored.set(e.key, e.value)
+    return { value: undefined } as never
+  })
+  const seen = world(on, {
+    files: { [`${DATA}/state.json`]: STATE, [`${DATA}/2026-10-11.md`]: `# Report\n\nOne thing to remember all day: ${line}\n` },
+    mtimes: { [`${DATA}/2026-10-11.md`]: Date.now() },
+  })
+  on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'engine band' }) as never)
+  on('session.start', async () => ({ cwd: '/' }))
+  return { clock, seen, stored }
+}
+
+const bandText = async (ui: Awaited<ReturnType<Engine['ui']['mount']>>) => (await ui.find({ type: 'Text', text: /Remember/ }))?.text
+
+const startAndDraw = async ($: Engine) => {
+  await $.session.start(START)
+  return $.ui.mount(BAND)
+}
+
+test('the band shows the remember line with a hide button', OPTIONS, async ($, on) => {
+  await bandWorld($, on, 'ship the parser')
+  const ui = await startAndDraw($)
+  expect(await bandText(ui)).toContain('ship the parser')
+  expect(await ui.find({ key: 'hide-remember' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a line hidden in one session stays hidden in a second session, and shows again as a new line', OPTIONS, async ($, on) => {
+  const { seen } = await bandWorld($, on, 'ship the parser')
+  const first = await startAndDraw($)
+  await first.press({ key: 'hide-remember' })
+  // The engine redraws a site that read a state value written; the test's state hooks stand for it.
+  await first.redraw()
+  expect(await bandText(first)).toBeUndefined()
+  await first.unmount()
+
+  seen.newSession()
+  const second = await startAndDraw($)
+  expect(await bandText(second)).toBeUndefined()
+  await second.unmount()
+})
+
+test('a new remember line shows again after an earlier one was hidden', OPTIONS, async ($, on) => {
+  await bandWorld($, on, 'ship the parser', { hiddenRemember: 'an older line' })
+  const ui = await startAndDraw($)
+  expect(await bandText(ui)).toContain('ship the parser')
+  await ui.unmount()
+})
+
+test('a session already open hides the line once another session stored it', OPTIONS, async ($, on) => {
+  const { clock, stored } = await bandWorld($, on, 'ship the parser')
+  const ui = await startAndDraw($)
+  expect(await bandText(ui)).toContain('ship the parser')
+  stored.set('hiddenRemember', 'ship the parser')
+  await clock.advance(REMEMBER_SYNC_MS)
+  await ui.redraw()
+  expect(await bandText(ui)).toBeUndefined()
+  await ui.unmount()
 })
 
 const NAMES = launchdNames(HOME, '501')

@@ -15,6 +15,10 @@ export const MAX_WINDOW_MS = 72 * 3600_000
 export const FIRST_WINDOW_MS = DAY_MS
 export const REPORTS_READ = 14
 export const REMEMBER_FRESH_MS = 36 * 3600_000
+// The `$.store` key holding the remember line the person hid, shared by every session of the plugin.
+export const REMEMBER_HIDDEN_KEY = 'hiddenRemember'
+// How often an open session looks in the store for a line another session hid.
+export const REMEMBER_SYNC_MS = 3000
 export const BATCH_SMALL_CHARS = 3_000
 export const BATCH_MAX_CHARS = 20_000
 

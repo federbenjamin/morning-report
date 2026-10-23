@@ -2,6 +2,6 @@ export type Remember = string | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'morning-report': { remember: Remember }
+    'morning-report': { remember: Remember; hiddenRemember: Remember }
   }
 }
