@@ -630,14 +630,17 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const line = await read($, remember)
-    if (line === null || e.props.hasSurvey) return next(e)
+    // Other plugins draw in the band too: the reminder stacks above what they drew, never in place of it.
+    const below = await next(e)
+    if (line === null || e.props.hasSurvey) return below
     const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box>
+      <Box flexDirection="column">
         <Text wrap="wrap">
           <Text bold>Remember: </Text>
           {line}
         </Text>
+        {below}
       </Box>
     )
   })
