@@ -27,6 +27,8 @@ import {
   pool,
   profileHeadingsBlock,
   REMEMBER_FRESH_MS,
+  REMEMBER_HIDDEN_KEY,
+  REMEMBER_SYNC_MS,
   rememberLine,
   renderPlist,
   REPORT_FIRES,
@@ -64,6 +66,23 @@ import {
 
 // The remember line, drawn in a band above the prompt: a status entry is one line and cuts it off.
 const remember = atom({ plugin: 'morning-report', key: 'remember' } as const, null)
+// The line the person hid, mirrored from the plugin's `$.store` (shared by every session) into this session's state.
+const hiddenRemember = atom({ plugin: 'morning-report', key: 'hiddenRemember' } as const, null)
+
+async function storedHidden($: EngineInterface): Promise<string | null> {
+  const stored = await $.store.get(REMEMBER_HIDDEN_KEY)
+  return typeof stored === 'string' ? stored : null
+}
+
+// A write to a state value redraws only the sites that read it, so an unchanged store redraws nothing.
+async function syncHidden($: EngineInterface): Promise<void> {
+  try {
+    const hidden = await storedHidden($)
+    if (hidden !== (await read($, hiddenRemember))) await update($, hiddenRemember, () => hidden)
+  } catch (err) {
+    $.ui.log(`morning-report: could not read the hidden remember line: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
 
 const SUMMARY_CONCURRENCY = 12
 const SUMMARY_TIMEOUT_MS = 300_000
@@ -531,12 +550,16 @@ async function runSetup($: EngineInterface, cfg: Config, args: string): Promise<
 }
 
 export const register: Register = (on, options) => {
+  let syncTimer: { cancel: () => void } | undefined
   // Each registration is tried on its own: a name the account already uses is refused, and that
   // refusal must not take the remember line or the other commands down with it.
   on('session.start', async ($, e, next) => {
     const cfg = await resolveConfig($, options)
     const line = await freshRemember($, cfg)
     await update($, remember, () => line ?? null)
+    await syncHidden($)
+    syncTimer?.cancel()
+    syncTimer = $.clock.every(REMEMBER_SYNC_MS, () => syncHidden($))
     const commands = [
       {
         name: 'morning-run',
@@ -630,16 +653,26 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const line = await read($, remember)
+    const hidden = await read($, hiddenRemember)
     // Other plugins draw in the band too: the reminder stacks above what they drew, never in place of it.
     const below = await next(e)
-    if (line === null || e.props.hasSurvey) return below
-    const { Box, Text } = $.ui.resolve(e)
+    if (line === null || line === hidden || e.props.hasSurvey) return below
+    const { Box, Button, Text } = $.ui.resolve(e)
+    // The band's own [-] raises no event a plugin hears, so hiding for every session needs a control of ours.
+    const hide = async () => {
+      await $.store.set(REMEMBER_HIDDEN_KEY, line)
+      await update($, hiddenRemember, () => line)
+    }
     return (
       <Box flexDirection="column">
-        <Text wrap="wrap">
-          <Text bold>Remember: </Text>
-          {line}
-        </Text>
+        <Box>
+          <Text wrap="wrap">
+            <Text bold>Remember: </Text>
+            {line}
+            {' '}
+          </Text>
+          <Button key="hide-remember" label="hide" dimColor onPress={hide} />
+        </Box>
         {below}
       </Box>
     )
