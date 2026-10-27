@@ -1,5 +1,7 @@
 # morning-report
 
+> **Moved.** This plugin now lives in [federbenjamin/feder-plugins](https://github.com/federbenjamin/feder-plugins) as `plugins/morning-report`, reshaped into a nightly status of your Claude Code streams for you and your agents. Install it with `claude plugin install morning-report --marketplace federbenjamin/feder-plugins`. This repository is archived and no longer updated.
+
 <p align="center"><strong>Accountability to your own goals: a daily status report written each night from your Claude Code sessions</strong></p>
 
 <p align="center">
